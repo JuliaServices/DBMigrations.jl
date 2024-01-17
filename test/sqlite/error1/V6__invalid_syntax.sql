@@ -1,0 +1,1 @@
+CREATEX TABLE invalid (x INT, y INT, z INT);
