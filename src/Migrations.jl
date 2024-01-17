@@ -31,7 +31,14 @@ struct Migration
     statements::Vector{SubString{String}}
 end
 
-Migration(filename::String, sha256::String, applied_at::String) = Migration(filename, sha256, applied_at, SubString{String}[])
+function Migration(filename::String)
+    contents = read(filename, String)
+    no_comments = join(filter!(x -> !startswith(x, "--"), map(strip, split(contents, '\n'))), '\n')
+    statements = filter!(!isempty, [strip(x) for x in split(no_comments, ';'; keepempty=false)])
+    return Migration(filename, bytes2hex(sha256(contents)), "", statements)
+end
+
+Migration(filename::String, sha256::String, applied_at) = Migration(filename, sha256, string(applied_at), SubString{String}[])
 ==(m1::Migration, m2::Migration) = m1.filename == m2.filename && m1.sha256 == m2.sha256
 
 struct DuplicateMigrationError <: Exception
@@ -69,7 +76,7 @@ be executed in order. If any statement fails, the entire migration will be rolle
 will be thrown. If a migration file contains a syntax error, the migration will be rolled back and
 an error will be thrown.
 """
-function runmigrations(conn::DBInterface.Connection, dir::String; silent::Bool=false)
+function runmigrations(conn, dir::String; silent::Bool=false)
     # first fetch migrations already applied from the database
     local dbmigrations
     try
@@ -85,7 +92,7 @@ function runmigrations(conn::DBInterface.Connection, dir::String; silent::Bool=f
         end
     end
     files = filter!(x -> match(r"V\d+__\w+\.sql", x) !== nothing, readdir(dir; join=true))
-    migrations = [Migration(basename(file), bytes2hex(sha256(file)), "", filter!(!isempty, [strip(x) for x in split(read(file, String), ';'; keepempty=false)])) for file in files]
+    migrations = map(Migration, files)
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
     db_index = 1
