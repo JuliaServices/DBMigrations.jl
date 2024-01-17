@@ -35,7 +35,7 @@ function Migration(filename::String)
     contents = read(filename, String)
     no_comments = join(filter!(x -> !startswith(x, "--"), map(strip, split(contents, '\n'))), '\n')
     statements = filter!(!isempty, [strip(x) for x in split(no_comments, ';'; keepempty=false)])
-    return Migration(filename, bytes2hex(sha256(contents)), "", statements)
+    return Migration(basename(filename), bytes2hex(sha256(contents)), "", statements)
 end
 
 Migration(filename::String, sha256::String, applied_at) = Migration(filename, sha256, string(applied_at), SubString{String}[])
