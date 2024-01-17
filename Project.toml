@@ -1,5 +1,5 @@
-name = "Example"
-uuid = "7876af07-990d-54b4-ab0e-23690620f79a"
+name = "Migrations"
+uuid = "277cf75d-8bce-46ef-b2a4-258a2479b121"
 version = "1.0.0"
 
 [compat]
