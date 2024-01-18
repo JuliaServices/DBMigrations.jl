@@ -1,4 +1,4 @@
-module Migrations
+module DBMigrations
 
 using DBInterface, SHA
 

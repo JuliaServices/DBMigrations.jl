@@ -1,4 +1,4 @@
-name = "Migrations"
+name = "DBMigrations"
 uuid = "277cf75d-8bce-46ef-b2a4-258a2479b121"
 version = "1.0.0"
 

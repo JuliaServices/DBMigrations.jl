@@ -1,4 +1,4 @@
-using Test, Migrations, DBInterface
+using Test, DBMigrations, DBInterface
 using SQLite
 
 @testset "Migrations" begin
