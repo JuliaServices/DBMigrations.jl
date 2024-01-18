@@ -13,7 +13,6 @@ DBInterface = "2.5"
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 SQLite = "0aa819cd-b072-5ff4-a722-6bc24af294d9"
-LibPQ = "194296ae-ab2e-5f79-8cd4-7183a0a5a0d1"
 
 [targets]
-test = ["Test", "SQLite", "LibPQ"]
+test = ["Test", "SQLite"]
