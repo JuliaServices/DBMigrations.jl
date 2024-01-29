@@ -8,14 +8,14 @@ GitHub Actions : [![Build Status](https://github.com/JuliaServices/Migrations.jl
 
 ## Usage
 
-Migrations.jl tries to be simple, transparent, and flexible. It relies on minimal required structure to work, while allowing for more complex setups.
+DBMigrations.jl tries to be simple, transparent, and flexible. It relies on minimal required structure to work, while allowing for more complex setups.
 
 It aims to be compatible with all database packages that support the interfaces in [DBInterface.jl](https://github.com/JuliaDatabases/DBInterface.jl).
 Currently that includes SQLite, MySQL, LibPQ.jl, and ODBC.jl.
 
-The primary interface is calling `Migrations.runmigrations(conn::DBInterface.Connection, dir::String)`.
+The primary interface is calling `DBMigrations.runmigrations(conn::DBInterface.Connection, dir::String)`.
 
-    Migrations.runmigrations(conn::DBInterface.Connection, dir::String)
+    DBMigrations.runmigrations(conn::DBInterface.Connection, dir::String)
 
 Using an established database connection `conn` (which should have the appropriate schema already
 selected), search the directory `dir` for migration files and apply them to the database. Migration
@@ -25,7 +25,7 @@ migration. The number must be unique across all migrations. The description can 
 should be descriptive of the migration. The file extension currently must be `.sql`.
 
 Migration files found in `dir` will be checked against a special `__migrations__` table that
-the Migrations.jl package manages in the database connection for tracking which migrations have
+the DBMigrations.jl package manages in the database connection for tracking which migrations have
 already been applied. If a migration file is found in `dir` that has not been applied, it will be
 applied to the database. If a migration file is found in `dir` that has already been applied, it
 will be skipped. If a migration file is found in `dir` that has been applied but has changed since
@@ -39,9 +39,9 @@ an error will be thrown.
 ## Example
 
 ```julia
-using Migrations, SQLite
+using DBMigrations, SQLite
 
 db = SQLite.DB("test.db")
 
-Migrations.runmigrations(db, "migrations")
+DBMigrations.runmigrations(db, "migrations")
 ```

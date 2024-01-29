@@ -55,7 +55,7 @@ function getmigrations(conn)
 end
 
 """
-    Migrations.runmigrations(conn::DBInterface.Connection, dir::String)
+    DBMigrations.runmigrations(conn::DBInterface.Connection, dir::String)
 
 Using an established database connection `conn` (which should have the appropriate schema already
 selected), search the directory `dir` for migration files and apply them to the database. Migration
@@ -65,7 +65,7 @@ migration. The number must be unique across all migrations. The description can 
 should be descriptive of the migration. The file extension currently must be `.sql`.
 
 Migration files found in `dir` will be checked against a special `__migrations__` table that
-the Migrations.jl package manages in the database connection for tracking which migrations have
+the DBMigrations.jl package manages in the database connection for tracking which migrations have
 already been applied. If a migration file is found in `dir` that has not been applied, it will be
 applied to the database. If a migration file is found in `dir` that has already been applied, it
 will be skipped. If a migration file is found in `dir` that has been applied but has changed since
@@ -116,13 +116,13 @@ function runmigrations(conn, dir::String; silent::Bool=false)
     # run migrations
     for m in migrations_to_run
         DBInterface.transaction(conn) do
-            silent || @info "Applying migration $(m.filename)"
+            silent || @info "Applying migrations from file: $(m.filename)"
             for statement in m.statements
                 silent || @info "Applying migration statement:\n$(statement)"
                 DBInterface.execute(conn, statement)
             end
             DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (filename, sha256) VALUES ('$(m.filename)', '$(m.sha256)')")
-            silent || @info "Applied migration $(m.filename)"
+            silent || @info "Applied migrations from file: $(m.filename)"
         end
     end
     return migrations_to_run
