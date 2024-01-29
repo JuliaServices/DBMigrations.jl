@@ -1,10 +1,10 @@
-# Migrations.jl
+# DBMigrations.jl
 
 ***A Julia package for managing database migrations***
 
-GitHub Actions : [![Build Status](https://github.com/JuliaServices/Migrations.jl/workflows/CI/badge.svg)](https://github.com/JuliaServices/Migrations.jl/actions?query=workflow%3ACI+branch%3Amaster)
+GitHub Actions : [![Build Status](https://github.com/JuliaServices/DBMigrations.jl/workflows/CI/badge.svg)](https://github.com/JuliaServices/DBMigrations.jl/actions?query=workflow%3ACI+branch%3Amaster)
 
-[![codecov.io](http://codecov.io/github/JuliaServices/Migrations.jl/coverage.svg?branch=master)](http://codecov.io/github/JuliaServices/Migrations.jl?branch=master)
+[![codecov.io](http://codecov.io/github/JuliaServices/DBMigrations.jl/coverage.svg?branch=master)](http://codecov.io/github/JuliaServices/DBMigrations.jl?branch=master)
 
 ## Usage
 
