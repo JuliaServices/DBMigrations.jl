@@ -45,26 +45,24 @@ struct Migration
     execution_time::Int
     success::Bool
     # non-db-stored fields
-    statements::Vector{SubString{String}}
+    statements::String
 end
 
-Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success, SubString{String}[])
+Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success, "")
 
 # filename matches r"V\d+__\w+\.sql"
 function Migration(filename::String)
-    contents = read(filename, String)
+    statements = read(filename, String)
     rank = parse(Int, match(r"V(\d+)", filename).captures[1])
     version = string(rank)
     description = match(r"V\d+__(\w+).sql", filename).captures[1]
-    lines = split(contents, '\n')
+    lines = split(statements, '\n')
     # calculated according to https://github.com/zaunerc/flyway-checksum-tool/blob/master/src/main/java/net/nllk/flywaychecksumtool/LoadableResource.java
     checksum = crc32(lines[1])
     for line in @view lines[2:end]
         checksum = crc32(line, checksum)
     end
     checksum = Base.bitcast(Int32, checksum)
-    no_comments = join(filter!(x -> !startswith(x, "--"), map(strip, lines)), '\n')
-    statements = filter!(!isempty, [strip(x) for x in split(no_comments, ';'; keepempty=false)])
     return Migration(rank, version, description, "SQL", basename(filename), checksum, "DBMigrations.jl", "", 0, false, statements)
 end
 
@@ -105,7 +103,7 @@ be executed in order. If any statement fails, the entire migration will be rolle
 will be thrown. If a migration file contains a syntax error, the migration will be rolled back and
 an error will be thrown.
 """
-function runmigrations(conn, dir::String; silent::Bool=false)
+function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::Bool=true)
     # first fetch migrations already applied from the database
     local dbmigrations
     try
@@ -147,9 +145,17 @@ function runmigrations(conn, dir::String; silent::Bool=false)
         DBInterface.transaction(conn) do
             start = time()
             silent || @info "Applying migrations from file: $(m.script)"
-            for statement in m.statements
-                silent || @info "Applying migration statement:\n$(statement)"
-                DBInterface.execute(conn, statement)
+            if splitstatements
+                for statement in split(m.statements, ';')
+                    statement = strip(statement)
+                    if !isempty(statement)
+                        silent || @info "Applying migration statement:\n$statement"
+                        DBInterface.execute(conn, statement)
+                    end
+                end
+            else
+                silent || @info "Applying migration statement:\n$(m.statements)"
+                DBInterface.execute(conn, m.statements)
             end
             insertmigration!(conn, m, round(Int, time() - start))
             silent || @info "Applied migrations from file: $(m.script)"
