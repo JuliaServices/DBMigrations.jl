@@ -4,25 +4,27 @@ using DBInterface, CRC32, Dates
 
 import Base: ==
 
+"""
+    MIGRATIONS_TABLE
+
+The name of the table the migrations metadata is stored in.
+
+Compatible with Flyway.
+"""
 const MIGRATIONS_TABLE = "flyway_schema_history"
 
-const MIGRATIONS_TABLE_SCHEMA = """
-CREATE TABLE $MIGRATIONS_TABLE (
-    installed_rank INTEGER NOT NULL,
-    version VARCHAR(50),
-    description VARCHAR(200) NOT NULL,
-    type VARCHAR(20) NOT NULL,
-    script VARCHAR(1000) NOT NULL,
-    checksum INTEGER,
-    installed_by VARCHAR(100) NOT NULL,
-    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    execution_time INTEGER NOT NULL,
-    success BOOLEAN NOT NULL
-);
-"""
-
-function insertmigration!(conn, m, etime)
-    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($(m.installed_rank), '$(m.version)', '$(m.description)', '$(m.type)', '$(m.script)', $(m.checksum), '$(m.installed_by)', $(max(1, etime)), true)")
+function insertmigration!(prepareds, migration, etime)
+    stmt = prepareds[:insert_migration]
+    params = (migration.installed_rank,
+              migration.version,
+              migration.description,
+              migration.type,
+              migration.script,
+              migration.checksum,
+              migration.installed_by,
+              max(1, etime),
+              true)
+    DBInterface.execute(stmt, params)
 end
 
 struct ChecksumMismatch <: Exception
@@ -76,8 +78,8 @@ Base.showerror(io::IO, e::DuplicateMigrationError) = print(io, "Duplicate migrat
 
 prefix(filename) = match(r"V\d+", filename).match
 
-function getmigrations(conn)
-    results = DBInterface.execute(conn, "SELECT * FROM $MIGRATIONS_TABLE")
+function getmigrations(prepareds)
+    results = DBInterface.execute(prepareds[:get_migrations])
     return [Migration(row...) for row in results]
 end
 
@@ -104,20 +106,42 @@ will be thrown. If a migration file contains a syntax error, the migration will 
 an error will be thrown.
 """
 function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::Bool=true)
-    # first fetch migrations already applied from the database
-    local dbmigrations
-    try
-        dbmigrations = getmigrations(conn)
+    # first prepare the statements we'll want to be able to use on `conn`
+    prepareds = Dict{Symbol,DBInterface.Statement}()
+
+    prepareds[:create_migrations_table] = DBInterface.prepare(conn, """
+        CREATE TABLE IF NOT EXISTS $MIGRATIONS_TABLE (
+            installed_rank INTEGER NOT NULL,
+            version VARCHAR(50),
+            description VARCHAR(200) NOT NULL,
+            type VARCHAR(20) NOT NULL,
+            script VARCHAR(1000) NOT NULL,
+            checksum INTEGER,
+            installed_by VARCHAR(100) NOT NULL,
+            installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            execution_time INTEGER NOT NULL,
+            success BOOLEAN NOT NULL
+        );
+        """)
+    # Create the table if it doesn't already exist, so that we can prepare the
+    # other remaining statements
+    DBInterface.execute(prepareds[:create_migrations_table])
+
+    prepareds[:drop_migrations] = DBInterface.prepare(conn, "DROP TABLE IF EXISTS $MIGRATIONS_TABLE")
+    prepareds[:get_migrations] = DBInterface.prepare(conn, "SELECT * FROM $MIGRATIONS_TABLE")
+    prepareds[:insert_migration] = DBInterface.prepare(conn, """
+        INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """)
+
+    # fetch migrations already applied from the database
+    dbmigrations = try
+        getmigrations(prepareds)
     catch e
-        silent || @warn "Unable to query migrations table, attempting to create:" exception=e
-        try
-            DBInterface.execute(conn, MIGRATIONS_TABLE_SCHEMA)
-            dbmigrations = getmigrations(conn)
-        catch e
-            @error "Unable to create migrations table" exception=e
-            rethrow()
-        end
+        @error "Unable to get existing entries of migrations table" exception=e
+        rethrow()
     end
+    
     files = filter!(x -> match(r"V\d+__\w+\.sql", x) !== nothing, readdir(dir; join=true))
     migrations = map(Migration, files)
     # filter out migrations that have already been applied
@@ -157,18 +181,18 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
                 silent || @info "Applying migration statement:\n$(m.statements)"
                 DBInterface.execute(conn, m.statements)
             end
-            insertmigration!(conn, m, round(Int, time() - start))
+            insertmigration!(prepareds, m, round(Int, time() - start))
             silent || @info "Applied migrations from file: $(m.script)"
         end
     end
     return migrations_to_run
 end
 
-function clean!(conn::DBInterface.Connection; confirm::Bool=false)
+function clean!(prepareds; confirm::Bool=false)
     confirm || throw(ArgumentError("Are you sure you want to delete the record of all previously applied migrations? Database state may be in an inconsistent state for future migrations. Pass `confirm=true` to proceed"))
-    DBInterface.execute(conn, "DROP TABLE $MIGRATIONS_TABLE")
-    DBInterface.execute(conn, MIGRATIONS_TABLE_SCHEMA)
+    DBInterface.execute(prepareds[:drop_migrations])
+    DBInterface.execute(prepareds[:create_migrations_table])
     return
 end
 
-end
+end # module
