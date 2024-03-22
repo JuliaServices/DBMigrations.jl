@@ -125,7 +125,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     db_index = 1
     for m in migrations
         # find matching db migration
-        while db_index <= length(dbmigrations) && prefix(dbmigrations[db_index].script) != prefix(m.script)
+        while db_index <= length(dbmigrations) && dbmigrations[db_index].installed_rank != m.installed_rank
             db_index += 1
         end
         if db_index > length(dbmigrations)
