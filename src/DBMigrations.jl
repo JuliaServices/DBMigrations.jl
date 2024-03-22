@@ -48,7 +48,7 @@ struct Migration
     statements::String
 end
 
-Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success, "")
+Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, coalesce(checksum, 0), installed_by, installed_on, execution_time, success, "")
 
 # filename matches r"V\d+__\w+\.sql"
 function Migration(filename::String)
@@ -131,7 +131,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         if db_index > length(dbmigrations)
             # we checked all applied migrations and didn't find `m`, so it needs to be run
             push!(migrations_to_run, m)
-        elseif dbmigrations[db_index].checksum != m.checksum
+        elseif dbmigrations[db_index].checksum != 0 && dbmigrations[db_index].checksum != m.checksum
             throw(ChecksumMismatch(m.script, m.checksum, dbmigrations[db_index].checksum))
         else
             # we found a matching migration, so we don't need to run it
