@@ -119,7 +119,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         end
     end
     files = filter!(x -> match(r"V\d+__\w+\.sql", x) !== nothing, readdir(dir; join=true))
-    migrations = map(Migration, files)
+    migrations = sort!(map(Migration, files), by=x->x.installed_rank)
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
     db_index = 1
