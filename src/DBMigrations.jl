@@ -35,7 +35,7 @@ Base.showerror(io::IO, e::ChecksumMismatch) = print(io, "Migration file $(e.file
 
 struct Migration
     installed_rank::Int
-    version::String
+    version::Union{String, Missing}
     description::String
     type::String
     script::String
