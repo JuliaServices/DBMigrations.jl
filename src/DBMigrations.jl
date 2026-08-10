@@ -26,7 +26,7 @@ sqlliteral(s::AbstractString) = string('\'', replace(s, '\'' => "''"), '\'')
 sqlliteral(::Missing) = "NULL"
 
 function insertmigration!(conn, m, etime)
-    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($(m.installed_rank), $(sqlliteral(m.version)), $(sqlliteral(m.description)), $(sqlliteral(m.type)), $(sqlliteral(m.script)), $(m.checksum), $(sqlliteral(m.installed_by)), $(max(1, etime)), true)")
+    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($(m.installed_rank), $(sqlliteral(m.version)), $(sqlliteral(m.description)), $(sqlliteral(m.type)), $(sqlliteral(m.script)), $(m.checksum), $(sqlliteral(m.installed_by)), $(max(0, etime)), true)")
 end
 
 struct ChecksumMismatch <: Exception
@@ -213,7 +213,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
                 silent || @info "Applying migration statement:\n$(m.statements)"
                 DBInterface.execute(conn, m.statements)
             end
-            insertmigration!(conn, m, round(Int, time() - start))
+            insertmigration!(conn, m, round(Int, (time() - start) * 1000))
             silent || @info "Applied migrations from file: $(m.script)"
         end
     end
