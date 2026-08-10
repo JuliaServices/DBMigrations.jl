@@ -17,7 +17,8 @@ CREATE TABLE $MIGRATIONS_TABLE (
     installed_by VARCHAR(100) NOT NULL,
     installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     execution_time INTEGER NOT NULL,
-    success BOOLEAN NOT NULL
+    success BOOLEAN NOT NULL,
+    CONSTRAINT $(MIGRATIONS_TABLE)_pk PRIMARY KEY (installed_rank)
 );
 """
 

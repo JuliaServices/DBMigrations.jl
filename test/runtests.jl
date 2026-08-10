@@ -123,12 +123,22 @@ using SQLite
         mktempdir() do dir
             write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
             db = SQLite.DB()
-            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            # a table created without the primary key (e.g. by older versions of this
+            # package) can hold duplicate ranks; runmigrations must detect them
+            DBInterface.execute(db, replace(DBMigrations.MIGRATIONS_TABLE_SCHEMA, r",\s*CONSTRAINT[^)]*\)" => ""))
             for script in ("V1__first.sql", "V1__other.sql")
                 DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'first', 'SQL', '$script', 0, 'flyway', 10, true)")
             end
             @test_throws DBMigrations.DuplicateMigrationError DBMigrations.runmigrations(db, dir; silent=true)
         end
+    end
+
+    @testset "history table primary key rejects duplicate ranks" begin
+        db = SQLite.DB()
+        DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+        insertsql = "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'first', 'SQL', 'V1__first.sql', 0, 'x', 10, true)"
+        DBInterface.execute(db, insertsql)
+        @test_throws SQLiteException DBInterface.execute(db, insertsql)
     end
 
     @testset "history table with different physical column order" begin
