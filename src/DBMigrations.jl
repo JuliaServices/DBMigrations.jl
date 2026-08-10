@@ -22,13 +22,23 @@ CREATE TABLE $MIGRATIONS_TABLE (
 );
 """
 
-# These packages cannot be hard dependencies, so identify the one driver whose
+# These packages cannot be hard dependencies, so identify the drivers whose
 # DBInterface placeholder and transaction behavior differs from the other supported
 # drivers. LibPQ.DBConnection is the public DBInterface connection wrapper.
 function islibpqconnection(conn)
     T = typeof(conn)
     return nameof(T) === :DBConnection && nameof(parentmodule(T)) === :LibPQ
 end
+
+# Postgres.jl implements the full DBInterface prepared-statement contract (so it
+# takes the generic prepare/execute/close! path), but like LibPQ it speaks native
+# PostgreSQL `$1` placeholders rather than `?`.
+function ispostgresconnection(conn)
+    T = typeof(conn)
+    return nameof(T) === :Connection && nameof(parentmodule(T)) === :Postgres
+end
+
+usesdollarmarkers(conn) = islibpqconnection(conn) || ispostgresconnection(conn)
 
 function ismysqlconnection(conn)
     T = typeof(conn)
@@ -108,7 +118,7 @@ function executebound(conn, sql, params)
 end
 
 function insertmigration!(conn, m, rank, etime)
-    markers = islibpqconnection(conn) ? join(("\$$i" for i = 1:9), ", ") : join(fill("?", 9), ", ")
+    markers = usesdollarmarkers(conn) ? join(("\$$i" for i = 1:9), ", ") : join(fill("?", 9), ", ")
     sql = "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($markers)"
     # MySQL.jl does not bind Bool correctly on all supported releases. Int8(1)
     # round-trips as true through SQLite/MySQL/Postgres/ODBC boolean columns.

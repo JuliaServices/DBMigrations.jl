@@ -11,7 +11,7 @@ GitHub Actions : [![Build Status](https://github.com/JuliaServices/DBMigrations.
 DBMigrations.jl tries to be simple, transparent, and flexible. It relies on minimal required structure to work, while allowing for more complex setups.
 
 It aims to be compatible with all database packages that support the interfaces in [DBInterface.jl](https://github.com/JuliaDatabases/DBInterface.jl).
-Currently that includes SQLite.jl, MySQL.jl, LibPQ.jl, and ODBC.jl.
+Currently that includes SQLite.jl, MySQL.jl, Postgres.jl, LibPQ.jl, and ODBC.jl.
 
 The primary interface is calling `DBMigrations.runmigrations(conn::DBInterface.Connection, dir::String)`.
 

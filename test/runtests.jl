@@ -29,6 +29,48 @@ import DBInterface
 struct Connection <: DBInterface.Connection end
 end
 
+# A minimal stand-in for Postgres.jl. It implements the full DBInterface
+# prepared-statement contract (unlike the LibPQ stub) but, like LibPQ, its server
+# only understands native `$1` placeholders — DBMigrations must select those.
+module Postgres
+import DBInterface
+
+mutable struct Connection <: DBInterface.Connection
+    executions::Vector{Tuple{String, Any}}
+    closed::Int
+    transactions::Vector{String}
+end
+
+struct Statement <: DBInterface.Statement
+    conn::Connection
+    sql::String
+end
+
+struct Result end
+
+DBInterface.prepare(conn::Connection, sql::AbstractString) = Statement(conn, String(sql))
+function DBInterface.execute(statement::Statement, params=())
+    occursin('?', statement.sql) && error("Postgres syntax error at or near \"?\": only \$1-style placeholders are supported")
+    push!(statement.conn.executions, (statement.sql, params))
+    return Result()
+end
+DBInterface.close!(statement::Statement) = (statement.conn.closed += 1)
+DBInterface.close!(::Result) = nothing
+
+# Postgres.jl provides its own DBInterface.transaction override
+function DBInterface.transaction(f, conn::Connection)
+    push!(conn.transactions, "BEGIN")
+    try
+        result = f()
+        push!(conn.transactions, "COMMIT")
+        return result
+    catch
+        push!(conn.transactions, "ROLLBACK")
+        rethrow()
+    end
+end
+end
+
 # ODBC.Cursor intentionally has no DBInterface.close! method in ODBC.jl. This
 # stand-in verifies that DBMigrations closes the owning statement instead.
 module ODBC
@@ -395,6 +437,35 @@ end
         @test params == (7, "1", "backslash\\'quote", "SQL", "V1__backslash\\'quote.sql", 123, "DBMigrations.jl", 9, Int8(1))
         @test !occursin("backslash", sql)
         @test conn.closed == 5
+    end
+
+    @testset "Postgres.jl placeholder and transaction compatibility" begin
+        conn = Postgres.Connection(Tuple{String, Any}[], 0, String[])
+        @test DBMigrations.ispostgresconnection(conn)
+        @test DBMigrations.usesdollarmarkers(conn)
+
+        # regression test (verified live against Postgres 16 via Postgres.jl):
+        # insertmigration! used `?` placeholders here, which PostgreSQL rejects
+        # with `syntax error at or near ","` during server-side prepare
+        m = DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "DBMigrations.jl", "", 0, false, "")
+        DBMigrations.insertmigration!(conn, m, 4, 9)
+        sql, params = only(conn.executions)
+        @test occursin("VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9)", sql)
+        @test params == (4, "1", "first", "SQL", "V1__first.sql", 123, "DBMigrations.jl", 9, Int8(1))
+        # the prepared statement is closed deterministically
+        @test conn.closed == 1
+
+        # migrationtransaction routes through Postgres.jl's own DBInterface.transaction
+        result = DBMigrations.migrationtransaction(conn) do
+            42
+        end
+        @test result == 42
+        @test conn.transactions == ["BEGIN", "COMMIT"]
+        empty!(conn.transactions)
+        @test_throws ErrorException DBMigrations.migrationtransaction(conn) do
+            error("migration failed")
+        end
+        @test conn.transactions == ["BEGIN", "ROLLBACK"]
     end
 
     @testset "ODBC cursor compatibility" begin
