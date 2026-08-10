@@ -184,13 +184,13 @@ using SQLite
         db = SQLite.DB()
         DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
         m = DBMigrations.Migration(1, "1", "it's got 'quotes'", "SQL", "V1__it's.sql", 123, "DBMigrations.jl", "", 0, false, "")
-        DBMigrations.insertmigration!(db, m, 5)
+        DBMigrations.insertmigration!(db, m, 1, 5)
         stored = only(DBMigrations.getmigrations(db))
         @test stored.description == "it's got 'quotes'"
         @test stored.script == "V1__it's.sql"
         # missing version is stored as NULL, not the string "missing"
         m2 = DBMigrations.Migration(2, missing, "noversion", "SQL", "V2__noversion.sql", 456, "DBMigrations.jl", "", 0, false, "")
-        DBMigrations.insertmigration!(db, m2, 5)
+        DBMigrations.insertmigration!(db, m2, 2, 5)
         @test isequal([r.version for r in DBInterface.execute(db, "SELECT version FROM $(DBMigrations.MIGRATIONS_TABLE) WHERE installed_rank = 2")], [missing])
     end
 
@@ -259,6 +259,46 @@ using SQLite
             @test_throws ArgumentError DBMigrations.clean!(db)
             DBMigrations.clean!(db; confirm=true)
             @test isempty(DBMigrations.getmigrations(db))
+        end
+    end
+
+    @testset "Flyway history where installed_rank != version" begin
+        # Flyway's installed_rank is an application-order counter, so e.g. versions
+        # 1, 2, 5 occupy ranks 1, 2, 3; regression test: rank-based matching treated
+        # version 5 as unapplied and silently re-executed it
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE accounts (balance INT);")
+            write(joinpath(dir, "V2__seed.sql"), "INSERT INTO accounts VALUES (100);")
+            write(joinpath(dir, "V5__bonus.sql"), "UPDATE accounts SET balance = balance + 50;")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            for (rank, file) in ((1, "V1__first.sql"), (2, "V2__seed.sql"), (3, "V5__bonus.sql"))
+                m = DBMigrations.Migration(joinpath(dir, file))
+                DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($rank, '$(m.version)', '$(m.description)', 'SQL', '$(m.script)', $(m.checksum), 'flyway', 10, true)")
+            end
+            DBInterface.execute(db, "CREATE TABLE accounts (balance INT)")
+            DBInterface.execute(db, "INSERT INTO accounts VALUES (150)")
+            @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
+            @test [r.balance for r in DBInterface.execute(db, "SELECT balance FROM accounts")] == [150]
+            # a new local migration gets the next application rank (4), not its version (6)
+            write(joinpath(dir, "V6__extra.sql"), "CREATE TABLE extra (x INT);")
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            @test [(r.installed_rank, r.version) for r in DBInterface.execute(db, "SELECT installed_rank, version FROM $(DBMigrations.MIGRATIONS_TABLE) ORDER BY installed_rank")] ==
+                [(1, "1"), (2, "2"), (3, "5"), (4, "6")]
+        end
+    end
+
+    @testset "Flyway repeatable migration row with NULL version" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V2__second.sql"), "CREATE TABLE t2 (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            # a repeatable migration occupies rank 2 with no version; it must not be
+            # confused with local V2 (rank-based matching threw ChecksumMismatch here)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (2, NULL, 'views', 'SQL', 'R__views.sql', 12345, 'flyway', 10, true)")
+            migrations = DBMigrations.runmigrations(db, dir; silent=true)
+            @test length(migrations) == 1
+            @test migrations[1].script == "V2__second.sql"
         end
     end
 

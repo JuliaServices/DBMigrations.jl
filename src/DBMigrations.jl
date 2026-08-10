@@ -26,8 +26,8 @@ CREATE TABLE $MIGRATIONS_TABLE (
 sqlliteral(s::AbstractString) = string('\'', replace(s, '\'' => "''"), '\'')
 sqlliteral(::Missing) = "NULL"
 
-function insertmigration!(conn, m, etime)
-    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($(m.installed_rank), $(sqlliteral(m.version)), $(sqlliteral(m.description)), $(sqlliteral(m.type)), $(sqlliteral(m.script)), $(m.checksum), $(sqlliteral(m.installed_by)), $(max(0, etime)), true)")
+function insertmigration!(conn, m, rank, etime)
+    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($rank, $(sqlliteral(m.version)), $(sqlliteral(m.description)), $(sqlliteral(m.type)), $(sqlliteral(m.script)), $(m.checksum), $(sqlliteral(m.installed_by)), $(max(0, etime)), true)")
 end
 
 struct ChecksumMismatch <: Exception
@@ -99,6 +99,9 @@ struct FailedMigrationError <: Exception
 end
 
 Base.showerror(io::IO, e::FailedMigrationError) = print(io, "Migration $(e.script) previously failed (success=false in $MIGRATIONS_TABLE). Manually repair the database and remove the failed row before re-running migrations")
+
+# normalize integer-like version strings so e.g. '05' and '5' compare equal
+versionkey(v::AbstractString) = (p = tryparse(Int, v); p === nothing ? String(v) : string(p))
 
 # skip a quoted region starting at `i` (opening quote char `q`), where a doubled
 # quote is an escape; returns the index just past the closing quote
@@ -200,7 +203,9 @@ should be descriptive of the migration. The file extension currently must be `.s
 
 Migration files found in `dir` will be checked against a special `$MIGRATIONS_TABLE` table that
 the DBMigrations.jl package manages in the database connection for tracking which migrations have
-already been applied. If a migration file is found in `dir` that has not been applied, it will be
+already been applied. History rows are matched to local files by version; the `installed_rank`
+column records application order (Flyway's semantics for the column, so a history table
+previously managed by Flyway can be picked up). If a migration file is found in `dir` that has not been
 applied to the database. If a migration file is found in `dir` that has already been applied, it
 will be skipped. If a migration file is found in `dir` that has been applied but has changed since
 it was applied, an error will be thrown (migrations should be immutable once applied).
@@ -260,17 +265,23 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         end
         throw(DuplicateMigrationError([m.script for m in migrations if counts[m.installed_rank] > 1]))
     end
-    # index applied migrations by version; duplicate versions in the db mean the
-    # history table is corrupt and needs manual repair
-    dbbyrank = Dict{Int, Migration}()
+    # index applied migrations by *version*, not installed_rank: Flyway's
+    # installed_rank is an application-order counter, so on a Flyway-written history
+    # it need not equal the version number (rank-based matching silently re-ran
+    # already-applied migrations there). Rows with no version (e.g. Flyway repeatable
+    # migrations) can't correspond to a local versioned file and are ignored.
+    # Duplicate versions in the db mean the history table is corrupt.
+    dbbyversion = Dict{String, Migration}()
     for dbm in dbmigrations
-        haskey(dbbyrank, dbm.installed_rank) && throw(DuplicateMigrationError([m.script for m in dbmigrations if m.installed_rank == dbm.installed_rank]))
-        dbbyrank[dbm.installed_rank] = dbm
+        dbm.version === missing && continue
+        k = versionkey(dbm.version)
+        haskey(dbbyversion, k) && throw(DuplicateMigrationError([x.script for x in dbmigrations if x.version !== missing && versionkey(x.version) == k]))
+        dbbyversion[k] = dbm
     end
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
     for m in migrations
-        dbm = get(dbbyrank, m.installed_rank, nothing)
+        dbm = get(dbbyversion, versionkey(m.version), nothing)
         if dbm === nothing
             # not applied yet, so it needs to be run
             push!(migrations_to_run, m)
@@ -283,12 +294,20 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     # by default, refuse to apply migrations with versions lower than the highest
     # already-applied version; the old scan-based matching silently *re-ran*
     # already-applied migrations in this situation
-    if !allowoutoforder && !isempty(dbmigrations)
-        maxapplied = maximum(dbm.installed_rank for dbm in dbmigrations)
+    appliedversions = Int[]
+    for dbm in dbmigrations
+        dbm.version === missing && continue
+        p = tryparse(Int, dbm.version)
+        p === nothing || push!(appliedversions, p)
+    end
+    if !allowoutoforder && !isempty(appliedversions)
+        maxapplied = maximum(appliedversions)
         outoforder = [m.script for m in migrations_to_run if m.installed_rank < maxapplied]
         isempty(outoforder) || throw(OutOfOrderMigrationError(outoforder, maxapplied))
     end
-    # run migrations
+    # run migrations; installed_rank records application order (max existing rank + 1
+    # onwards), matching Flyway's semantics for the column
+    nextrank = (isempty(dbmigrations) ? 0 : maximum(dbm.installed_rank for dbm in dbmigrations)) + 1
     for m in migrations_to_run
         DBInterface.transaction(conn) do
             start = time()
@@ -302,9 +321,10 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
                 silent || @info "Applying migration statement:\n$(m.statements)"
                 DBInterface.execute(conn, m.statements)
             end
-            insertmigration!(conn, m, round(Int, (time() - start) * 1000))
+            insertmigration!(conn, m, nextrank, round(Int, (time() - start) * 1000))
             silent || @info "Applied migrations from file: $(m.script)"
         end
+        nextrank += 1
     end
     return migrations_to_run
 end
