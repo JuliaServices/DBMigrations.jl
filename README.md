@@ -29,7 +29,7 @@ the DBMigrations.jl package manages in the database connection for tracking whic
 already been applied (the table name and layout are compatible with [Flyway](https://flywaydb.org/),
 including its line-ending-independent CRC32 checksums, so a history table previously managed by
 Flyway can be picked up by DBMigrations.jl). Flyway baseline rows also suppress all local versions
-at or below the baseline. If a migration file is found in `dir` that has not been
+at or below the baseline, and Flyway `DELETE` repair markers are honored. If a migration file is found in `dir` that has not been
 applied, it will be applied to the database. If a migration file is found in `dir` that has already
 been applied, it will be skipped. If a migration file is found in `dir` that has been applied but
 has changed since it was applied, a `ChecksumMismatch` will be thrown (migrations should be

@@ -227,6 +227,12 @@ end
 
 Base.showerror(io::IO, e::DuplicateInstalledRankError) = print(io, "Duplicate installed_rank values detected in $MIGRATIONS_TABLE: $(e.ranks)")
 
+struct InvalidDeleteMarkerError <: Exception
+    version::String
+end
+
+Base.showerror(io::IO, e::InvalidDeleteMarkerError) = print(io, "Flyway DELETE marker for version $(e.version) has no active migration row to delete")
+
 struct OutOfOrderMigrationError <: Exception
     migrations::Vector{String}
     maxapplied::Union{Int, String}
@@ -277,6 +283,31 @@ function versiondisplay(parts, original)
         return Int(parts[1])
     end
     return String(original)
+end
+
+function activehistory(dbmigrations)
+    active = trues(length(dbmigrations))
+    for (i, dbm) in enumerate(dbmigrations)
+        uppercase(dbm.type) == "DELETE" || continue
+        active[i] = false
+        dbm.version === missing && continue
+
+        key = versionkey(dbm.version)
+        target = nothing
+        for j = (i - 1):-1:1
+            active[j] || continue
+            candidate = dbmigrations[j]
+            candidate.version === missing && continue
+            versionkey(candidate.version) == key || continue
+            type = uppercase(candidate.type)
+            (type == "BASELINE" || type == "SCHEMA" || type == "DELETE" || startswith(type, "UNDO")) && continue
+            target = j
+            break
+        end
+        target === nothing && throw(InvalidDeleteMarkerError(dbm.version))
+        active[target] = false
+    end
+    return dbmigrations[active]
 end
 
 # DBMigrations versions before 2.2 stored the raw filename description. Accept that
@@ -505,6 +536,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         end
         throw(DuplicateInstalledRankError(sort!([rank for (rank, count) in counts if count > 1])))
     end
+    effectivemigrations = activehistory(dbmigrations)
     allfiles = filter(isfile, readdir(dir; join=true))
     files = filter(x -> match(MIGRATION_FILE_REGEX, basename(x)) !== nothing, allfiles)
     if !silent
@@ -529,16 +561,16 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     # migrations) can't correspond to a local versioned file and are ignored.
     # Duplicate versions in the db mean the history table is corrupt.
     dbbyversion = Dict{String, Migration}()
-    for dbm in dbmigrations
+    for dbm in effectivemigrations
         dbm.version === missing && continue
         k = versionkey(dbm.version)
-        haskey(dbbyversion, k) && throw(DuplicateMigrationError([x.script for x in dbmigrations if x.version !== missing && versionkey(x.version) == k]))
+        haskey(dbbyversion, k) && throw(DuplicateMigrationError([x.script for x in effectivemigrations if x.version !== missing && versionkey(x.version) == k]))
         dbbyversion[k] = dbm
     end
     # A Flyway baseline declares every lower version already represented by the
     # database state even though those versions have no individual history rows.
     baselineversion = nothing
-    for dbm in dbmigrations
+    for dbm in effectivemigrations
         dbm.version === missing && continue
         uppercase(dbm.type) == "BASELINE" || continue
         parts = flywayversionparts(dbm.version)
@@ -571,7 +603,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     # already-applied version; the old scan-based matching silently *re-ran*
     # already-applied migrations in this situation
     maxapplied = nothing
-    for dbm in dbmigrations
+    for dbm in effectivemigrations
         dbm.version === missing && continue
         parts = flywayversionparts(dbm.version)
         parts === nothing && continue

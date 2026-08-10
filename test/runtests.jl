@@ -592,6 +592,35 @@ end
         end
     end
 
+    @testset "Flyway DELETE repair markers" begin
+        mktempdir() do dir
+            path = joinpath(dir, "V1__first.sql")
+            write(path, "SELECT 1;")
+            migration = DBMigrations.Migration(path)
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBMigrations.insertmigration!(db, migration, 1, 0)
+            deleted = DBMigrations.Migration(2, "1", migration.description, "DELETE", migration.script, migration.checksum, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, deleted, 2, 0)
+
+            # Flyway repair appends a DELETE row instead of removing the original.
+            # The local file is pending again, and the full history still determines
+            # the next installed rank.
+            @test [m.script for m in DBMigrations.runmigrations(db, dir; silent=true)] == ["V1__first.sql"]
+            @test [(row.installed_rank, row.type) for row in DBMigrations.getmigrations(db)] ==
+                [(1, "SQL"), (2, "DELETE"), (3, "SQL")]
+        end
+
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "SELECT 1;")
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            deleted = DBMigrations.Migration(1, "1", "first", "DELETE", "V1__first.sql", 123, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, deleted, 1, 0)
+            @test_throws DBMigrations.InvalidDeleteMarkerError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
     @testset "Flyway repeatable migration row with NULL version" begin
         mktempdir() do dir
             write(joinpath(dir, "V2__second.sql"), "CREATE TABLE t2 (x INT);")
