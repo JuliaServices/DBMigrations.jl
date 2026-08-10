@@ -412,13 +412,24 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         haskey(dbbyversion, k) && throw(DuplicateMigrationError([x.script for x in dbmigrations if x.version !== missing && versionkey(x.version) == k]))
         dbbyversion[k] = dbm
     end
+    # A Flyway baseline declares every lower version already represented by the
+    # database state even though those versions have no individual history rows.
+    baselineversions = Int[]
+    for dbm in dbmigrations
+        dbm.version === missing && continue
+        uppercase(dbm.type) == "BASELINE" || continue
+        p = tryparse(Int, dbm.version)
+        p === nothing || push!(baselineversions, p)
+    end
+    baselineversion = isempty(baselineversions) ? nothing : maximum(baselineversions)
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
     for m in migrations
         dbm = get(dbbyversion, versionkey(m.version), nothing)
         if dbm === nothing
-            # not applied yet, so it needs to be run
-            push!(migrations_to_run, m)
+            # Versions at or below a Flyway baseline are represented by that baseline
+            # row and must not be run against the existing database state.
+            (baselineversion === nothing || m.installed_rank > baselineversion) && push!(migrations_to_run, m)
         elseif dbm.checksum !== missing && dbm.description != m.description && dbm.description != legacydescription(m)
             throw(DescriptionMismatch(m.script, m.description, dbm.description))
         elseif dbm.checksum !== missing && dbm.checksum != m.checksum

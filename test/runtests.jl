@@ -456,5 +456,21 @@ end
             @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
             @test only(DBMigrations.getmigrations(db)).checksum === missing
         end
+
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE must_not_run_1 (x INT);")
+            write(joinpath(dir, "V4__fourth.sql"), "CREATE TABLE must_not_run_4 (x INT);")
+            write(joinpath(dir, "V6__after_baseline.sql"), "CREATE TABLE after_baseline (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '5', '<< Flyway Baseline >>', 'BASELINE', '<< Flyway Baseline >>', NULL, 'flyway', 0, true)")
+            migrations = DBMigrations.runmigrations(db, dir; silent=true)
+            @test [m.script for m in migrations] == ["V6__after_baseline.sql"]
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM must_not_run_1")
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM must_not_run_4")
+            @test isempty(DBInterface.execute(db, "SELECT * FROM after_baseline"))
+            @test [(r.installed_rank, r.version) for r in DBInterface.execute(db, "SELECT installed_rank, version FROM $(DBMigrations.MIGRATIONS_TABLE) ORDER BY installed_rank")] ==
+                [(1, "5"), (2, "6")]
+        end
     end
 end
