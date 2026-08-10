@@ -35,27 +35,64 @@ function ismysqlconnection(conn)
     return nameof(T) === :Connection && nameof(parentmodule(T)) === :MySQL
 end
 
+function issqliteconnection(conn)
+    T = typeof(conn)
+    return nameof(T) === :DB && nameof(parentmodule(T)) === :SQLite
+end
+
+function closecursor(cursor)
+    if applicable(DBInterface.close!, cursor)
+        DBInterface.close!(cursor)
+    elseif applicable(close, cursor)
+        close(cursor)
+    end
+    return
+end
+
 function closelibpqresult(conn, sql, params=nothing)
     result = params === nothing ? DBInterface.execute(conn, sql) : DBInterface.execute(conn, sql, params)
     try
         return nothing
     finally
-        close(result)
+        closecursor(result)
+    end
+end
+
+function executewithcursor(f, conn, sql, params=nothing)
+    if islibpqconnection(conn)
+        result = params === nothing ? DBInterface.execute(conn, sql) : DBInterface.execute(conn, sql, params)
+        try
+            return f(result)
+        finally
+            closecursor(result)
+        end
+    end
+    actualparams = params === nothing ? () : params
+    return DBInterface.execute(f, conn, sql, actualparams)
+end
+
+function executecommand(conn, sql)
+    if issqliteconnection(conn)
+        # SQLite's direct DBInterface fallback owns a prepared statement that remains
+        # registered until GC. The callback form closes it deterministically.
+        return executewithcursor(_ -> nothing, conn, sql)
+    end
+
+    # Preserve direct execution for arbitrary migration SQL on MySQL, LibPQ, ODBC,
+    # and other drivers. Close the returned cursor when that driver exposes a method.
+    cursor = DBInterface.execute(conn, sql)
+    try
+        return nothing
+    finally
+        closecursor(cursor)
     end
 end
 
 function executebound(conn, sql, params)
-    if islibpqconnection(conn)
-        # LibPQ uses $1 placeholders and its Statement is not a DBInterface.Statement,
-        # so use its direct parameter execution path and close the Result explicitly.
-        closelibpqresult(conn, sql, params)
-    else
-        # SQLite, MySQL, and ODBC use `?`. The callback form closes both the cursor
-        # and the one-shot prepared statement on all three drivers.
-        DBInterface.execute(conn, sql, params) do _
-            nothing
-        end
-    end
+    # LibPQ uses $1 placeholders and its Statement is not a DBInterface.Statement;
+    # executewithcursor uses direct parameter execution there. SQLite, MySQL, and
+    # ODBC use `?` and the callback form closes their one-shot prepared statements.
+    executewithcursor(_ -> nothing, conn, sql, params)
 end
 
 function insertmigration!(conn, m, rank, etime)
@@ -316,8 +353,10 @@ end
 function getmigrations(conn)
     # select columns explicitly: the Migration constructor is positional, so we can't
     # depend on the physical column order of a pre-existing (e.g. Flyway-created) table
-    results = DBInterface.execute(conn, "SELECT installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success FROM $MIGRATIONS_TABLE ORDER BY installed_rank")
-    return [Migration(row...) for row in results]
+    sql = "SELECT installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success FROM $MIGRATIONS_TABLE ORDER BY installed_rank"
+    return executewithcursor(conn, sql) do results
+        [Migration(row...) for row in results]
+    end
 end
 
 """
@@ -370,7 +409,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     catch e
         silent || @warn "Unable to query migrations table, attempting to create:" exception=e
         try
-            DBInterface.execute(conn, MIGRATIONS_TABLE_SCHEMA)
+            executecommand(conn, MIGRATIONS_TABLE_SCHEMA)
             dbmigrations = getmigrations(conn)
         catch e
             @error "Unable to create migrations table" exception=e
@@ -460,11 +499,11 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             if splitstatements
                 for statement in splitsqlstatements(m.statements, ismysqlconnection(conn))
                     silent || @info "Applying migration statement:\n$statement"
-                    DBInterface.execute(conn, statement)
+                    executecommand(conn, statement)
                 end
             else
                 silent || @info "Applying migration statement:\n$(m.statements)"
-                DBInterface.execute(conn, m.statements)
+                executecommand(conn, m.statements)
             end
             insertmigration!(conn, m, nextrank, round(Int, (time() - start) * 1000))
             silent || @info "Applied migrations from file: $(m.script)"
@@ -476,8 +515,8 @@ end
 
 function clean!(conn::DBInterface.Connection; confirm::Bool=false)
     confirm || throw(ArgumentError("Are you sure you want to delete the record of all previously applied migrations? Database state may be in an inconsistent state for future migrations. Pass `confirm=true` to proceed"))
-    DBInterface.execute(conn, "DROP TABLE $MIGRATIONS_TABLE")
-    DBInterface.execute(conn, MIGRATIONS_TABLE_SCHEMA)
+    executecommand(conn, "DROP TABLE $MIGRATIONS_TABLE")
+    executecommand(conn, MIGRATIONS_TABLE_SCHEMA)
     return
 end
 

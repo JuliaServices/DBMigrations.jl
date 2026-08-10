@@ -253,6 +253,24 @@ end
         end
     end
 
+    @testset "one-shot SQLite statements are closed" begin
+        db = SQLite.DB()
+        activehandles() = count(wrapper -> wrapper[] != C_NULL, keys(db.stmt_wrappers))
+        DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+        @test activehandles() == 0
+        for _ = 1:100
+            @test isempty(DBMigrations.getmigrations(db))
+        end
+        @test activehandles() == 0
+
+        mktempdir() do dir
+            statements = join(("SELECT $i" for i = 1:100), ";")
+            write(joinpath(dir, "V1__many_statements.sql"), statements)
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            @test activehandles() == 0
+        end
+    end
+
     @testset "checksums are line-ending and BOM independent" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__lf.sql"), "CREATE TABLE t1 (x INT);\nCREATE TABLE t2 (y INT);")
