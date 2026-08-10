@@ -68,4 +68,77 @@ using SQLite
         db = SQLite.DB()
         @test_throws ArgumentError DBMigrations.runmigrations(db, joinpath(@__DIR__, "does_not_exist"))
     end
+
+    @testset "out-of-order migrations" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            write(joinpath(dir, "V3__third.sql"), "CREATE TABLE t3 (x INT);")
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 2
+            # V2 shows up after V3 was already applied
+            write(joinpath(dir, "V2__second.sql"), "CREATE TABLE t2 (x INT);")
+            @test_throws DBMigrations.OutOfOrderMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+            # regression test: the old matching logic re-ran already-applied V3 here
+            migrations = DBMigrations.runmigrations(db, dir; silent=true, allowoutoforder=true)
+            @test length(migrations) == 1
+            @test migrations[1].script == "V2__second.sql"
+            @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
+        end
+    end
+
+    @testset "duplicate version of an already-applied migration" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__original.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            # regression test: a duplicate of an already-applied version used to be
+            # silently run because uniqueness was only checked on pending migrations
+            write(joinpath(dir, "V1__sneaky_duplicate.sql"), "CREATE TABLE t1b (x INT);")
+            @test_throws DBMigrations.DuplicateMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM t1b")
+        end
+    end
+
+    @testset "checksum mismatch on modified migration" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT, y INT);")
+            @test_throws DBMigrations.ChecksumMismatch DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
+    @testset "failed migration recorded in history table" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'first', 'SQL', 'V1__first.sql', 0, 'flyway', 10, false)")
+            @test_throws DBMigrations.FailedMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
+    @testset "duplicate versions in history table" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            for script in ("V1__first.sql", "V1__other.sql")
+                DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'first', 'SQL', '$script', 0, 'flyway', 10, true)")
+            end
+            @test_throws DBMigrations.DuplicateMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
+    @testset "Flyway baseline row with NULL checksum" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__baseline.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'baseline', 'BASELINE', 'V1__baseline.sql', NULL, 'flyway', 10, true)")
+            # baseline row means V1 counts as applied even though checksums can't be compared
+            @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
+        end
+    end
 end

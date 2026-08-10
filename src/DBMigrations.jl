@@ -78,7 +78,18 @@ end
 
 Base.showerror(io::IO, e::DuplicateMigrationError) = print(io, "Duplicate migration version numbers detected: $(e.migrations)")
 
-prefix(filename) = match(r"^V\d+", basename(filename)).match
+struct OutOfOrderMigrationError <: Exception
+    migrations::Vector{String}
+    maxapplied::Int
+end
+
+Base.showerror(io::IO, e::OutOfOrderMigrationError) = print(io, "Out-of-order migrations detected: $(e.migrations) have versions lower than the highest already-applied migration version ($(e.maxapplied)). Pass `allowoutoforder=true` to apply them anyway")
+
+struct FailedMigrationError <: Exception
+    script::String
+end
+
+Base.showerror(io::IO, e::FailedMigrationError) = print(io, "Migration $(e.script) previously failed (success=false in $MIGRATIONS_TABLE). Manually repair the database and remove the failed row before re-running migrations")
 
 function getmigrations(conn)
     results = DBInterface.execute(conn, "SELECT * FROM $MIGRATIONS_TABLE")
@@ -106,8 +117,22 @@ Migration files may contain multiple SQL statements, separated by semicolons. Ea
 be executed in order. If any statement fails, the entire migration will be rolled back and an error
 will be thrown. If a migration file contains a syntax error, the migration will be rolled back and
 an error will be thrown.
+
+Supported keyword arguments:
+  * `silent::Bool=false`: suppress informational logging while applying migrations
+  * `splitstatements::Bool=true`: split each migration file on semicolons and execute each
+    statement separately; pass `false` to pass each file's contents to the database driver
+    as-is (note some drivers, e.g. SQLite, only execute the first statement of a multi-statement string)
+  * `allowoutoforder::Bool=false`: by default, an `OutOfOrderMigrationError` is thrown if a
+    pending migration has a version lower than the highest already-applied version (e.g. `V2`
+    shows up after `V3` was already applied); pass `true` to apply such migrations anyway
+
+Duplicate migration versions (in the local directory or in the database history table) throw a
+`DuplicateMigrationError`. A migration recorded as failed in the history table (possible when the
+table is shared with other tools like Flyway; this package rolls failed migrations back without
+recording them) throws a `FailedMigrationError` and requires manual repair.
 """
-function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::Bool=true)
+function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::Bool=true, allowoutoforder::Bool=false)
     isdir(dir) || throw(ArgumentError("migrations directory does not exist: `$dir`"))
     # first fetch migrations already applied from the database
     local dbmigrations
@@ -125,26 +150,42 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     end
     files = filter!(x -> match(MIGRATION_FILE_REGEX, basename(x)) !== nothing, readdir(dir; join=true))
     migrations = sort!(map(Migration, files), by=x->x.installed_rank)
+    # check that all local migration versions are unique before comparing against the db
+    if !allunique(m.installed_rank for m in migrations)
+        counts = Dict{Int, Int}()
+        for m in migrations
+            counts[m.installed_rank] = get(counts, m.installed_rank, 0) + 1
+        end
+        throw(DuplicateMigrationError([m.script for m in migrations if counts[m.installed_rank] > 1]))
+    end
+    # index applied migrations by version; duplicate versions in the db mean the
+    # history table is corrupt and needs manual repair
+    dbbyrank = Dict{Int, Migration}()
+    for dbm in dbmigrations
+        haskey(dbbyrank, dbm.installed_rank) && throw(DuplicateMigrationError([m.script for m in dbmigrations if m.installed_rank == dbm.installed_rank]))
+        dbbyrank[dbm.installed_rank] = dbm
+    end
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
-    db_index = 1
     for m in migrations
-        # find matching db migration
-        while db_index <= length(dbmigrations) && dbmigrations[db_index].installed_rank != m.installed_rank
-            db_index += 1
-        end
-        if db_index > length(dbmigrations)
-            # we checked all applied migrations and didn't find `m`, so it needs to be run
+        dbm = get(dbbyrank, m.installed_rank, nothing)
+        if dbm === nothing
+            # not applied yet, so it needs to be run
             push!(migrations_to_run, m)
-        elseif dbmigrations[db_index].checksum != 0 && dbmigrations[db_index].checksum != m.checksum
-            throw(ChecksumMismatch(m.script, m.checksum, dbmigrations[db_index].checksum))
-        else
-            # we found a matching migration, so we don't need to run it
-            db_index += 1
+        elseif !dbm.success
+            throw(FailedMigrationError(m.script))
+        elseif dbm.checksum != 0 && dbm.checksum != m.checksum
+            throw(ChecksumMismatch(m.script, m.checksum, dbm.checksum))
         end
     end
-    # check that resulting migrations are unique
-    allunique(prefix(m.script) for m in migrations_to_run) || throw(DuplicateMigrationError([m.script for m in migrations_to_run]))
+    # by default, refuse to apply migrations with versions lower than the highest
+    # already-applied version; the old scan-based matching silently *re-ran*
+    # already-applied migrations in this situation
+    if !allowoutoforder && !isempty(dbmigrations)
+        maxapplied = maximum(dbm.installed_rank for dbm in dbmigrations)
+        outoforder = [m.script for m in migrations_to_run if m.installed_rank < maxapplied]
+        isempty(outoforder) || throw(OutOfOrderMigrationError(outoforder, maxapplied))
+    end
     # run migrations
     for m in migrations_to_run
         DBInterface.transaction(conn) do
