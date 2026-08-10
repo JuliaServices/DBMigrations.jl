@@ -1,5 +1,6 @@
 [deps]
+DBMigrations = "277cf75d-8bce-46ef-b2a4-258a2479b121"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 
 [compat]
-Documenter = "0.27"
+Documenter = "1"
