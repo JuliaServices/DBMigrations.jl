@@ -21,8 +21,12 @@ CREATE TABLE $MIGRATIONS_TABLE (
 );
 """
 
+# render a value as a SQL literal, escaping embedded single quotes
+sqlliteral(s::AbstractString) = string('\'', replace(s, '\'' => "''"), '\'')
+sqlliteral(::Missing) = "NULL"
+
 function insertmigration!(conn, m, etime)
-    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($(m.installed_rank), '$(m.version)', '$(m.description)', '$(m.type)', '$(m.script)', $(m.checksum), '$(m.installed_by)', $(max(1, etime)), true)")
+    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($(m.installed_rank), $(sqlliteral(m.version)), $(sqlliteral(m.description)), $(sqlliteral(m.type)), $(sqlliteral(m.script)), $(m.checksum), $(sqlliteral(m.installed_by)), $(max(1, etime)), true)")
 end
 
 struct ChecksumMismatch <: Exception

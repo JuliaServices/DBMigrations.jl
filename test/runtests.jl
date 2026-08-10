@@ -170,6 +170,21 @@ using SQLite
         end
     end
 
+    @testset "history values with embedded quotes are escaped" begin
+        db = SQLite.DB()
+        DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+        m = DBMigrations.Migration(1, "1", "it's got 'quotes'", "SQL", "V1__it's.sql", 123, "DBMigrations.jl", "", 0, false, "")
+        DBMigrations.insertmigration!(db, m, 5)
+        stored = only(DBMigrations.getmigrations(db))
+        @test stored.description == "it's got 'quotes'"
+        @test stored.script == "V1__it's.sql"
+        # missing version is stored as NULL, not the string "missing"
+        m2 = DBMigrations.Migration(2, missing, "noversion", "SQL", "V2__noversion.sql", 456, "DBMigrations.jl", "", 0, false, "")
+        DBMigrations.insertmigration!(db, m2, 5)
+        row = only(DBInterface.execute(db, "SELECT version FROM $(DBMigrations.MIGRATIONS_TABLE) WHERE installed_rank = 2"))
+        @test row.version === missing
+    end
+
     @testset "Flyway baseline row with NULL checksum" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__baseline.sql"), "CREATE TABLE t1 (x INT);")
