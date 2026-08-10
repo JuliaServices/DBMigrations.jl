@@ -181,8 +181,50 @@ using SQLite
         # missing version is stored as NULL, not the string "missing"
         m2 = DBMigrations.Migration(2, missing, "noversion", "SQL", "V2__noversion.sql", 456, "DBMigrations.jl", "", 0, false, "")
         DBMigrations.insertmigration!(db, m2, 5)
-        row = only(DBInterface.execute(db, "SELECT version FROM $(DBMigrations.MIGRATIONS_TABLE) WHERE installed_rank = 2"))
-        @test row.version === missing
+        @test isequal([r.version for r in DBInterface.execute(db, "SELECT version FROM $(DBMigrations.MIGRATIONS_TABLE) WHERE installed_rank = 2")], [missing])
+    end
+
+    @testset "splitsqlstatements" begin
+        split_ = DBMigrations.splitsqlstatements
+        @test split_("SELECT 1; SELECT 2") == ["SELECT 1", "SELECT 2"]
+        @test split_("SELECT 1;;SELECT 2;") == ["SELECT 1", "SELECT 2"]
+        # semicolons inside single-quoted strings, incl. '' escapes
+        @test split_("INSERT INTO t VALUES ('a;b'); SELECT 1") == ["INSERT INTO t VALUES ('a;b')", "SELECT 1"]
+        @test split_("INSERT INTO t VALUES ('it''s; fine'); SELECT 1") == ["INSERT INTO t VALUES ('it''s; fine')", "SELECT 1"]
+        # semicolons inside quoted identifiers
+        @test split_("CREATE TABLE \"we;ird\" (x INT); SELECT 1") == ["CREATE TABLE \"we;ird\" (x INT)", "SELECT 1"]
+        @test split_("SELECT `a;b` FROM t; SELECT 1") == ["SELECT `a;b` FROM t", "SELECT 1"]
+        # semicolons inside comments
+        @test split_("SELECT 1 -- not; a separator\n; SELECT 2") == ["SELECT 1 -- not; a separator", "SELECT 2"]
+        @test split_("SELECT 1 /* not; a separator */; SELECT 2") == ["SELECT 1 /* not; a separator */", "SELECT 2"]
+        @test split_("/* nested /* block; */ comment; */ SELECT 1") == ["/* nested /* block; */ comment; */ SELECT 1"]
+        # Postgres dollar-quoted bodies
+        @test split_("CREATE FUNCTION f() RETURNS void AS \$\$ BEGIN PERFORM 1; END; \$\$ LANGUAGE plpgsql; SELECT 1") ==
+            ["CREATE FUNCTION f() RETURNS void AS \$\$ BEGIN PERFORM 1; END; \$\$ LANGUAGE plpgsql", "SELECT 1"]
+        @test split_("SELECT \$tag\$ a; b \$tag\$; SELECT 1") == ["SELECT \$tag\$ a; b \$tag\$", "SELECT 1"]
+        # comment-only/whitespace-only chunks are dropped
+        @test split_("SELECT 1;\n-- done\n") == ["SELECT 1"]
+        @test split_("-- nothing here\n/* at all */") == []
+        @test split_("") == []
+        # unterminated constructs don't hang or throw
+        @test split_("SELECT 'abc") == ["SELECT 'abc"]
+        @test split_("SELECT 1 /* unterminated") == ["SELECT 1 /* unterminated"]
+        @test split_("SELECT \$\$ unterminated") == ["SELECT \$\$ unterminated"]
+        # a lone $ isn't a dollar-quote
+        @test split_("SELECT a\$b; SELECT 1") == ["SELECT a\$b", "SELECT 1"]
+    end
+
+    @testset "statement splitting during migration" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__seed.sql"), """
+                CREATE TABLE notes (txt TEXT);
+                INSERT INTO notes VALUES ('semi;colons; galore');
+                -- trailing comment
+                """)
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            @test [r.txt for r in DBInterface.execute(db, "SELECT txt FROM notes")] == ["semi;colons; galore"]
+        end
     end
 
     @testset "Flyway baseline row with NULL checksum" begin

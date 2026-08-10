@@ -99,6 +99,83 @@ end
 
 Base.showerror(io::IO, e::FailedMigrationError) = print(io, "Migration $(e.script) previously failed (success=false in $MIGRATIONS_TABLE). Manually repair the database and remove the failed row before re-running migrations")
 
+# skip a quoted region starting at `i` (opening quote char `q`), where a doubled
+# quote is an escape; returns the index just past the closing quote
+function skipquoted(sql, n, i, q)
+    j = nextind(sql, i)
+    while j <= n
+        if sql[j] == q
+            k = nextind(sql, j)
+            (k <= n && sql[k] == q) || return k
+            j = nextind(sql, k)
+        else
+            j = nextind(sql, j)
+        end
+    end
+    return j
+end
+
+# skip a `/* */` block comment starting at `i`, honoring nesting (Postgres);
+# returns the index just past the closing `*/`
+function skipblockcomment(sql, n, i)
+    j = nextind(sql, nextind(sql, i))
+    depth = 1
+    while j <= n && depth > 0
+        c = sql[j]
+        k = nextind(sql, j)
+        if c == '*' && k <= n && sql[k] == '/'
+            depth -= 1
+            j = nextind(sql, k)
+        elseif c == '/' && k <= n && sql[k] == '*'
+            depth += 1
+            j = nextind(sql, k)
+        else
+            j = k
+        end
+    end
+    return j
+end
+
+"""
+    DBMigrations.splitsqlstatements(sql::AbstractString)
+
+Split `sql` into individual statements on semicolons, ignoring semicolons that appear
+inside single-quoted strings, double-quoted or backtick-quoted identifiers, line (`--`)
+and block (`/* */`, nesting allowed) comments, and Postgres dollar-quoted (`\$tag\$`)
+blocks. Chunks containing only whitespace/comments are dropped.
+"""
+function splitsqlstatements(sql::AbstractString)
+    statements = String[]
+    n = lastindex(sql)
+    stmtstart = firstindex(sql)
+    hascontent = false
+    i = firstindex(sql)
+    while i <= n
+        c = sql[i]
+        if c == ';'
+            hascontent && push!(statements, strip(SubString(sql, stmtstart, prevind(sql, i))))
+            stmtstart = i = nextind(sql, i)
+            hascontent = false
+        elseif c == '\'' || c == '"' || c == '`'
+            hascontent = true
+            i = skipquoted(sql, n, i, c)
+        elseif c == '-' && (k = nextind(sql, i); k <= n && sql[k] == '-')
+            i = something(findnext(==('\n'), sql, k), n + 1)
+        elseif c == '/' && (k = nextind(sql, i); k <= n && sql[k] == '*')
+            i = skipblockcomment(sql, n, i)
+        elseif c == '$' && (m = match(r"^\$[A-Za-z_][A-Za-z_0-9]*\$|^\$\$", SubString(sql, i)); m !== nothing)
+            hascontent = true
+            closing = findnext(m.match, sql, i + ncodeunits(m.match))
+            i = closing === nothing ? n + 1 : nextind(sql, last(closing))
+        else
+            hascontent |= !isspace(c)
+            i = nextind(sql, i)
+        end
+    end
+    hascontent && push!(statements, strip(SubString(sql, stmtstart, n)))
+    return statements
+end
+
 function getmigrations(conn)
     # select columns explicitly: the Migration constructor is positional, so we can't
     # depend on the physical column order of a pre-existing (e.g. Flyway-created) table
@@ -126,13 +203,16 @@ it was applied, an error will be thrown (migrations should be immutable once app
 Migration files may contain multiple SQL statements, separated by semicolons. Each statement will
 be executed in order. If any statement fails, the entire migration will be rolled back and an error
 will be thrown. If a migration file contains a syntax error, the migration will be rolled back and
-an error will be thrown.
+an error will be thrown. Semicolons inside single-quoted strings, quoted identifiers, `--` and
+`/* */` comments, and Postgres dollar-quoted blocks are not treated as statement separators.
 
 Supported keyword arguments:
   * `silent::Bool=false`: suppress informational logging while applying migrations
   * `splitstatements::Bool=true`: split each migration file on semicolons and execute each
     statement separately; pass `false` to pass each file's contents to the database driver
-    as-is (note some drivers, e.g. SQLite, only execute the first statement of a multi-statement string)
+    as-is, e.g. for constructs the splitter doesn't understand such as SQLite `CREATE TRIGGER`
+    bodies with embedded semicolons (note some drivers, e.g. SQLite, only execute the first
+    statement of a multi-statement string, so such constructs should live in their own file)
   * `allowoutoforder::Bool=false`: by default, an `OutOfOrderMigrationError` is thrown if a
     pending migration has a version lower than the highest already-applied version (e.g. `V2`
     shows up after `V3` was already applied); pass `true` to apply such migrations anyway
@@ -202,12 +282,9 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             start = time()
             silent || @info "Applying migrations from file: $(m.script)"
             if splitstatements
-                for statement in split(m.statements, ';')
-                    statement = strip(statement)
-                    if !isempty(statement)
-                        silent || @info "Applying migration statement:\n$statement"
-                        DBInterface.execute(conn, statement)
-                    end
+                for statement in splitsqlstatements(m.statements)
+                    silent || @info "Applying migration statement:\n$statement"
+                    DBInterface.execute(conn, statement)
                 end
             else
                 silent || @info "Applying migration statement:\n$(m.statements)"
