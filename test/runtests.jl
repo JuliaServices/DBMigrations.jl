@@ -46,4 +46,26 @@ using SQLite
         dir = "error2"
         @test_throws DBMigrations.DuplicateMigrationError DBMigrations.runmigrations(db, abspath(joinpath(dirname(pathof(DBMigrations)), "..", "test/sqlite", dir)))
     end
+
+    @testset "directory path containing V<digits>" begin
+        # regression test: rank/prefix used to be parsed from the full path, so a
+        # path segment like `V2` corrupted every migration's version
+        mktempdir() do tmp
+            dir = joinpath(tmp, "appV2", "migrations")
+            mkpath(dir)
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            write(joinpath(dir, "V3__third.sql"), "CREATE TABLE t3 (x INT);")
+            db = SQLite.DB()
+            migrations = DBMigrations.runmigrations(db, dir; silent=true)
+            @test length(migrations) == 2
+            @test migrations[1].installed_rank == 1
+            @test migrations[2].installed_rank == 3
+            @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
+        end
+    end
+
+    @testset "nonexistent migrations directory" begin
+        db = SQLite.DB()
+        @test_throws ArgumentError DBMigrations.runmigrations(db, joinpath(@__DIR__, "does_not_exist"))
+    end
 end

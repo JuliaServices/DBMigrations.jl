@@ -50,12 +50,16 @@ end
 
 Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, coalesce(checksum, 0), installed_by, installed_on, execution_time, success, "")
 
-# filename matches r"V\d+__\w+\.sql"
+const MIGRATION_FILE_REGEX = r"^V(\d+)__(\w+)\.sql$"
+
+# filename matches MIGRATION_FILE_REGEX
 function Migration(filename::String)
     statements = read(filename, String)
-    rank = parse(Int, match(r"V(\d+)", filename).captures[1])
+    m = match(MIGRATION_FILE_REGEX, basename(filename))
+    m === nothing && throw(ArgumentError("invalid migration filename: `$(basename(filename))`; must match `V<version>__<description>.sql`"))
+    rank = parse(Int, m.captures[1])
     version = string(rank)
-    description = match(r"V\d+__(\w+).sql", filename).captures[1]
+    description = String(m.captures[2])
     lines = split(statements, '\n')
     # calculated according to https://github.com/zaunerc/flyway-checksum-tool/blob/master/src/main/java/net/nllk/flywaychecksumtool/LoadableResource.java
     checksum = crc32(lines[1])
@@ -74,7 +78,7 @@ end
 
 Base.showerror(io::IO, e::DuplicateMigrationError) = print(io, "Duplicate migration version numbers detected: $(e.migrations)")
 
-prefix(filename) = match(r"V\d+", filename).match
+prefix(filename) = match(r"^V\d+", basename(filename)).match
 
 function getmigrations(conn)
     results = DBInterface.execute(conn, "SELECT * FROM $MIGRATIONS_TABLE")
@@ -104,6 +108,7 @@ will be thrown. If a migration file contains a syntax error, the migration will 
 an error will be thrown.
 """
 function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::Bool=true)
+    isdir(dir) || throw(ArgumentError("migrations directory does not exist: `$dir`"))
     # first fetch migrations already applied from the database
     local dbmigrations
     try
@@ -118,7 +123,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             rethrow()
         end
     end
-    files = filter!(x -> match(r"V\d+__\w+\.sql", x) !== nothing, readdir(dir; join=true))
+    files = filter!(x -> match(MIGRATION_FILE_REGEX, basename(x)) !== nothing, readdir(dir; join=true))
     migrations = sort!(map(Migration, files), by=x->x.installed_rank)
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
