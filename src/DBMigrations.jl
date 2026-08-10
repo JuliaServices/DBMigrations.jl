@@ -22,12 +22,70 @@ CREATE TABLE $MIGRATIONS_TABLE (
 );
 """
 
-# render a value as a SQL literal, escaping embedded single quotes
-sqlliteral(s::AbstractString) = string('\'', replace(s, '\'' => "''"), '\'')
-sqlliteral(::Missing) = "NULL"
+# These packages cannot be hard dependencies, so identify the one driver whose
+# DBInterface placeholder and transaction behavior differs from the other supported
+# drivers. LibPQ.DBConnection is the public DBInterface connection wrapper.
+function islibpqconnection(conn)
+    T = typeof(conn)
+    return nameof(T) === :DBConnection && nameof(parentmodule(T)) === :LibPQ
+end
+
+function closelibpqresult(conn, sql, params=nothing)
+    result = params === nothing ? DBInterface.execute(conn, sql) : DBInterface.execute(conn, sql, params)
+    try
+        return nothing
+    finally
+        close(result)
+    end
+end
+
+function executebound(conn, sql, params)
+    if islibpqconnection(conn)
+        # LibPQ uses $1 placeholders and its Statement is not a DBInterface.Statement,
+        # so use its direct parameter execution path and close the Result explicitly.
+        closelibpqresult(conn, sql, params)
+    else
+        # SQLite, MySQL, and ODBC use `?`. The callback form closes both the cursor
+        # and the one-shot prepared statement on all three drivers.
+        DBInterface.execute(conn, sql, params) do _
+            nothing
+        end
+    end
+end
 
 function insertmigration!(conn, m, rank, etime)
-    DBInterface.execute(conn, "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($rank, $(sqlliteral(m.version)), $(sqlliteral(m.description)), $(sqlliteral(m.type)), $(sqlliteral(m.script)), $(m.checksum), $(sqlliteral(m.installed_by)), $(max(0, etime)), true)")
+    markers = islibpqconnection(conn) ? join(("\$$i" for i = 1:9), ", ") : join(fill("?", 9), ", ")
+    sql = "INSERT INTO $MIGRATIONS_TABLE (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($markers)"
+    # MySQL.jl does not bind Bool correctly on all supported releases. Int8(1)
+    # round-trips as true through SQLite/MySQL/Postgres/ODBC boolean columns.
+    params = (rank, m.version, m.description, m.type, m.script, m.checksum, m.installed_by, max(0, etime), Int8(1))
+    executebound(conn, sql, params)
+end
+
+function migrationtransaction(f, conn)
+    islibpqconnection(conn) || return DBInterface.transaction(f, conn)
+
+    # DBInterface 2.7 prepares transaction-control statements. LibPQ.Statement does
+    # not implement DBInterface.Statement/close!, so that generic path fails before
+    # BEGIN. Direct execution also works on DBInterface 2.6, the Julia 1.6 minimum.
+    closelibpqresult(conn, "BEGIN;")
+    try
+        result = f()
+        closelibpqresult(conn, "COMMIT;")
+        return result
+    catch transaction_error
+        transaction_backtrace = catch_backtrace()
+        try
+            closelibpqresult(conn, "ROLLBACK;")
+        catch rollback_error
+            rollback_backtrace = catch_backtrace()
+            throw(CompositeException([
+                CapturedException(transaction_error, transaction_backtrace),
+                CapturedException(rollback_error, rollback_backtrace),
+            ]))
+        end
+        rethrow()
+    end
 end
 
 struct ChecksumMismatch <: Exception
@@ -336,7 +394,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     # onwards), matching Flyway's semantics for the column
     nextrank = (isempty(dbmigrations) ? 0 : maximum(dbm.installed_rank for dbm in dbmigrations)) + 1
     for m in migrations_to_run
-        DBInterface.transaction(conn) do
+        migrationtransaction(conn) do
             start = time()
             silent || @info "Applying migrations from file: $(m.script)"
             if splitstatements

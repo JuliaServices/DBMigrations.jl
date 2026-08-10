@@ -1,6 +1,29 @@
 using Test, DBMigrations, DBInterface
 using SQLite
 
+# A minimal stand-in for LibPQ's DBInterface wrapper. LibPQ is intentionally not a
+# test dependency, but its public type/module names select DBMigrations' compatibility
+# path and let the transaction/placeholder behavior be regression-tested.
+module LibPQ
+import DBInterface
+
+mutable struct DBConnection <: DBInterface.Connection
+    executions::Vector{Tuple{String, Any}}
+    closed::Int
+end
+
+struct Result
+    conn::DBConnection
+end
+
+Base.close(result::Result) = (result.conn.closed += 1)
+
+function DBInterface.execute(conn::DBConnection, sql::AbstractString, params=())
+    push!(conn.executions, (String(sql), params))
+    return Result(conn)
+end
+end
+
 @testset "DBMigrations" begin
     @testset "SQLite" begin
         db = SQLite.DB()
@@ -251,6 +274,32 @@ using SQLite
         m2 = DBMigrations.Migration(2, missing, "noversion", "SQL", "V2__noversion.sql", 456, "DBMigrations.jl", "", 0, false, "")
         DBMigrations.insertmigration!(db, m2, 2, 5)
         @test isequal([r.version for r in DBInterface.execute(db, "SELECT version FROM $(DBMigrations.MIGRATIONS_TABLE) WHERE installed_rank = 2")], [missing])
+    end
+
+    @testset "LibPQ parameter and transaction compatibility" begin
+        conn = LibPQ.DBConnection(Tuple{String, Any}[], 0)
+        result = DBMigrations.migrationtransaction(conn) do
+            42
+        end
+        @test result == 42
+        @test first.(conn.executions) == ["BEGIN;", "COMMIT;"]
+        @test conn.closed == 2
+
+        empty!(conn.executions)
+        @test_throws ErrorException DBMigrations.migrationtransaction(conn) do
+            error("migration failed")
+        end
+        @test first.(conn.executions) == ["BEGIN;", "ROLLBACK;"]
+        @test conn.closed == 4
+
+        empty!(conn.executions)
+        m = DBMigrations.Migration(1, "1", "backslash\\'quote", "SQL", "V1__backslash\\'quote.sql", 123, "DBMigrations.jl", "", 0, false, "")
+        DBMigrations.insertmigration!(conn, m, 7, 9)
+        sql, params = only(conn.executions)
+        @test occursin("VALUES (\$1, \$2, \$3, \$4, \$5, \$6, \$7, \$8, \$9)", sql)
+        @test params == (7, "1", "backslash\\'quote", "SQL", "V1__backslash\\'quote.sql", 123, "DBMigrations.jl", 9, Int8(1))
+        @test !occursin("backslash", sql)
+        @test conn.closed == 5
     end
 
     @testset "splitsqlstatements" begin
