@@ -1,5 +1,5 @@
-using Documenter, Example
+using Documenter, DBMigrations
 
-makedocs(modules = [Example], sitename = "Example.jl")
+makedocs(modules = [DBMigrations], sitename = "DBMigrations.jl")
 
-deploydocs(repo = "github.com/quinnj/Example.jl.git", push_preview = true)
+deploydocs(repo = "github.com/JuliaServices/DBMigrations.jl.git", push_preview = true)
