@@ -237,6 +237,31 @@ using SQLite
         end
     end
 
+    @testset "description charset and non-matching .sql files" begin
+        mktempdir() do dir
+            # hyphens/dots in descriptions are valid (Flyway allows them)
+            write(joinpath(dir, "V1__add-index.v2.sql"), "CREATE TABLE t1 (x INT);")
+            # doesn't match the naming pattern: warned about, not applied
+            write(joinpath(dir, "v2__lowercase.sql"), "CREATE TABLE t2 (x INT);")
+            db = SQLite.DB()
+            migrations = @test_logs (:warn, r"Ignoring \.sql files") match_mode=:any DBMigrations.runmigrations(db, dir)
+            @test length(migrations) == 1
+            @test migrations[1].description == "add-index.v2"
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM t2")
+        end
+    end
+
+    @testset "clean!" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            @test_throws ArgumentError DBMigrations.clean!(db)
+            DBMigrations.clean!(db; confirm=true)
+            @test isempty(DBMigrations.getmigrations(db))
+        end
+    end
+
     @testset "Flyway baseline row with NULL checksum" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__baseline.sql"), "CREATE TABLE t1 (x INT);")
