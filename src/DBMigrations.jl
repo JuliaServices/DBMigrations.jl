@@ -30,6 +30,11 @@ function islibpqconnection(conn)
     return nameof(T) === :DBConnection && nameof(parentmodule(T)) === :LibPQ
 end
 
+function ismysqlconnection(conn)
+    T = typeof(conn)
+    return nameof(T) === :Connection && nameof(parentmodule(T)) === :MySQL
+end
+
 function closelibpqresult(conn, sql, params=nothing)
     result = params === nothing ? DBInterface.execute(conn, sql) : DBInterface.execute(conn, sql, params)
     try
@@ -177,20 +182,46 @@ function legacydescription(m::Migration)
     return String(match_.captures[2])
 end
 
-# skip a quoted region starting at `i` (opening quote char `q`), where a doubled
-# quote is an escape; returns the index just past the closing quote
-function skipquoted(sql, n, i, q)
+# skip a quoted region starting at `i`, where a doubled closing character is an
+# escape; returns the index just past the closing character
+function skipquoted(sql, n, i, closing)
     j = nextind(sql, i)
     while j <= n
-        if sql[j] == q
+        if sql[j] == closing
             k = nextind(sql, j)
-            (k <= n && sql[k] == q) || return k
+            (k <= n && sql[k] == closing) || return k
             j = nextind(sql, k)
         else
             j = nextind(sql, j)
         end
     end
     return j
+end
+
+function islinecommentstart(sql, n, i, mysqlcomments)
+    c = sql[i]
+    c == '#' && return mysqlcomments
+    c == '-' || return false
+    second = nextind(sql, i)
+    second <= n && sql[second] == '-' || return false
+    mysqlcomments || return true
+    after = nextind(sql, second)
+    return after > n || isspace(sql[after])
+end
+
+function statementtext(sql, start, stop, lonecommentcrs)
+    relevantcrs = [i for i in lonecommentcrs if start <= i <= stop]
+    isempty(relevantcrs) && return String(strip(SubString(sql, start, stop)))
+
+    io = IOBuffer()
+    position = start
+    for cr in relevantcrs
+        position < cr && write(io, SubString(sql, position, prevind(sql, cr)))
+        write(io, '\n')
+        position = nextind(sql, cr)
+    end
+    position <= stop && write(io, SubString(sql, position, stop))
+    return String(strip(String(take!(io))))
 end
 
 # skip a `/* */` block comment starting at `i`, honoring nesting (Postgres);
@@ -218,39 +249,57 @@ end
     DBMigrations.splitsqlstatements(sql::AbstractString)
 
 Split `sql` into individual statements on semicolons, ignoring semicolons that appear
-inside single-quoted strings, double-quoted or backtick-quoted identifiers, line (`--`)
-and block (`/* */`, nesting allowed) comments, and Postgres dollar-quoted (`\$tag\$`)
-blocks. Chunks containing only whitespace/comments are dropped.
+inside single-quoted strings, double-quoted, backtick-quoted, or bracket-quoted
+identifiers, line (`--`) and block (`/* */`, nesting allowed) comments, and Postgres
+dollar-quoted (`\$tag\$`) blocks. Chunks containing only whitespace/comments are dropped.
 
 Quotes are escaped by doubling (`''`), per the SQL standard; non-standard
 backslash-escaped quotes (e.g. MySQL's default `\\'`) are not recognized — use `''` or
 `splitstatements=false` for such files.
 """
-function splitsqlstatements(sql::AbstractString)
+splitsqlstatements(sql::AbstractString) = splitsqlstatements(sql, false)
+
+function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool)
     statements = String[]
     n = lastindex(sql)
     stmtstart = firstindex(sql)
     hascontent = false
+    lonecommentcrs = Int[]
     i = firstindex(sql)
     while i <= n
         c = sql[i]
         if c == ';'
-            hascontent && push!(statements, strip(SubString(sql, stmtstart, prevind(sql, i))))
+            hascontent && push!(statements, statementtext(sql, stmtstart, prevind(sql, i), lonecommentcrs))
             stmtstart = i = nextind(sql, i)
             hascontent = false
+            empty!(lonecommentcrs)
         elseif c == '\'' || c == '"' || c == '`'
             hascontent = true
             i = skipquoted(sql, n, i, c)
-        elseif c == '-' && (k = nextind(sql, i); k <= n && sql[k] == '-')
+        elseif c == '['
+            hascontent = true
+            i = skipquoted(sql, n, i, ']')
+        elseif islinecommentstart(sql, n, i, mysqlcomments)
             # a lone \r is a line ending too (consistent with the checksum algorithm)
-            i = something(findnext(x -> x == '\n' || x == '\r', sql, k), n + 1)
-            # never emit a statement that *starts* with a comment: some drivers'
-            # tokenizers (e.g. SQLite's, which ends -- comments only at \n) could
-            # see the whole statement as a comment and fail on it
-            hascontent || (stmtstart = i)
+            lineend = something(findnext(x -> x == '\n' || x == '\r', sql, nextind(sql, i)), n + 1)
+            if lineend <= n && sql[lineend] == '\r'
+                after = nextind(sql, lineend)
+                (after > n || sql[after] != '\n') && push!(lonecommentcrs, lineend)
+            end
+            # Preserve line-form optimizer hints, but trim ordinary leading comments.
+            second = c == '-' ? nextind(sql, i) : i
+            after = nextind(sql, second)
+            hint = c == '-' && after <= n && sql[after] == '+'
+            i = lineend
+            !hascontent && !hint && (stmtstart = i)
         elseif c == '/' && (k = nextind(sql, i); k <= n && sql[k] == '*')
+            after = nextind(sql, k)
+            marker = after <= n ? sql[after] : '\0'
+            executable = marker == '!'
+            hint = marker == '+'
             i = skipblockcomment(sql, n, i)
-            hascontent || (stmtstart = i)
+            executable && (hascontent = true)
+            !hascontent && !hint && (stmtstart = i)
         elseif c == '$' && (m = match(r"^\$[\p{L}\p{M}_][\p{L}\p{M}\p{Nd}_]*\$|^\$\$", SubString(sql, i)); m !== nothing)
             hascontent = true
             closing = findnext(m.match, sql, i + ncodeunits(m.match))
@@ -260,7 +309,7 @@ function splitsqlstatements(sql::AbstractString)
             i = nextind(sql, i)
         end
     end
-    hascontent && push!(statements, strip(SubString(sql, stmtstart, n)))
+    hascontent && push!(statements, statementtext(sql, stmtstart, n, lonecommentcrs))
     return statements
 end
 
@@ -398,7 +447,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             start = time()
             silent || @info "Applying migrations from file: $(m.script)"
             if splitstatements
-                for statement in splitsqlstatements(m.statements)
+                for statement in splitsqlstatements(m.statements, ismysqlconnection(conn))
                     silent || @info "Applying migration statement:\n$statement"
                     DBInterface.execute(conn, statement)
                 end

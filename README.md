@@ -36,7 +36,8 @@ immutable once applied).
 
 Migration files may contain multiple SQL statements, separated by semicolons. Each statement will
 be executed in order. Semicolons inside single-quoted strings, quoted identifiers, `--`/`/* */`
-comments, and Postgres dollar-quoted blocks are handled correctly. Each migration file is applied
+comments, and Postgres dollar-quoted blocks are handled correctly. Direct MySQL connections also
+use MySQL's `#` and whitespace-sensitive `--` comment rules. Each migration file is applied
 in a transaction: if any statement fails, the migration is rolled back and the error rethrown.
 
 Supported keyword arguments to `runmigrations`:

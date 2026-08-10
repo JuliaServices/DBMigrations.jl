@@ -24,6 +24,11 @@ function DBInterface.execute(conn::DBConnection, sql::AbstractString, params=())
 end
 end
 
+module MySQL
+import DBInterface
+struct Connection <: DBInterface.Connection end
+end
+
 @testset "DBMigrations" begin
     @testset "SQLite" begin
         db = SQLite.DB()
@@ -312,6 +317,7 @@ end
         # semicolons inside quoted identifiers
         @test split_("CREATE TABLE \"we;ird\" (x INT); SELECT 1") == ["CREATE TABLE \"we;ird\" (x INT)", "SELECT 1"]
         @test split_("SELECT `a;b` FROM t; SELECT 1") == ["SELECT `a;b` FROM t", "SELECT 1"]
+        @test split_("CREATE TABLE [we;ird] (x INT); SELECT 1") == ["CREATE TABLE [we;ird] (x INT)", "SELECT 1"]
         # semicolons inside comments
         @test split_("SELECT 1 -- not; a separator\n; SELECT 2") == ["SELECT 1 -- not; a separator", "SELECT 2"]
         @test split_("SELECT 1 /* not; a separator */; SELECT 2") == ["SELECT 1 /* not; a separator */", "SELECT 2"]
@@ -320,6 +326,10 @@ end
         # parsed as all-comment and fail)
         @test split_("/* nested /* block; */ comment; */ SELECT 1") == ["SELECT 1"]
         @test split_("-- leading\nSELECT 1; -- inter\nSELECT 2") == ["SELECT 1", "SELECT 2"]
+        # Executable MySQL comments and optimizer hints affect semantics and must not
+        # be removed as ordinary leading comments.
+        @test split_("/*!40101 SET @saved = 1 */; SELECT 2") == ["/*!40101 SET @saved = 1 */", "SELECT 2"]
+        @test split_("/*+ INDEX(t idx) */ SELECT * FROM t; SELECT 2") == ["/*+ INDEX(t idx) */ SELECT * FROM t", "SELECT 2"]
         # Postgres dollar-quoted bodies
         @test split_("CREATE FUNCTION f() RETURNS void AS \$\$ BEGIN PERFORM 1; END; \$\$ LANGUAGE plpgsql; SELECT 1") ==
             ["CREATE FUNCTION f() RETURNS void AS \$\$ BEGIN PERFORM 1; END; \$\$ LANGUAGE plpgsql", "SELECT 1"]
@@ -340,6 +350,15 @@ end
         # used to be silently swallowed into it and never executed
         @test split_("CREATE TABLE t (x INT);\r-- seed\rINSERT INTO t VALUES (1);\r") ==
             ["CREATE TABLE t (x INT)", "INSERT INTO t VALUES (1)"]
+        # SQLite does not treat lone CR as a line ending. Only comment terminators
+        # are normalized; CR characters in SQL string literals remain unchanged.
+        @test split_("CREATE TABLE t (x INT, -- keep y\ry INT); SELECT '\r';") ==
+            ["CREATE TABLE t (x INT, -- keep y\ny INT)", "SELECT '\r'"]
+
+        mysqlsplit = sql -> DBMigrations.splitsqlstatements(sql, true)
+        @test DBMigrations.ismysqlconnection(MySQL.Connection())
+        @test mysqlsplit("SELECT 1; # comment; still a comment\nSELECT 2;") == ["SELECT 1", "SELECT 2"]
+        @test mysqlsplit("SELECT 2--1; SELECT 3") == ["SELECT 2--1", "SELECT 3"]
     end
 
     @testset "statement splitting during migration" begin
@@ -352,10 +371,12 @@ end
             # a CR-only file must fully execute end-to-end (regression: everything
             # after the first -- comment was silently lost)
             write(joinpath(dir, "V2__cr_only.sql"), "CREATE TABLE crt (x INT);\r-- seed\rINSERT INTO crt VALUES (1);\r")
+            write(joinpath(dir, "V3__inline_cr.sql"), "CREATE TABLE inline_cr (x INT, -- keep y\ry INT);")
             db = SQLite.DB()
-            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 2
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 3
             @test [r.txt for r in DBInterface.execute(db, "SELECT txt FROM notes")] == ["semi;colons; galore"]
             @test [r.x for r in DBInterface.execute(db, "SELECT x FROM crt")] == [1]
+            @test [r.name for r in DBInterface.execute(db, "PRAGMA table_info(inline_cr)")] == ["x", "y"]
         end
     end
 
