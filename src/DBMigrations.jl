@@ -55,13 +55,17 @@ const MIGRATION_FILE_REGEX = r"^V(\d+)__(\w+)\.sql$"
 # filename matches MIGRATION_FILE_REGEX
 function Migration(filename::String)
     statements = read(filename, String)
+    # strip a UTF-8 BOM before checksumming/executing, matching Flyway
+    startswith(statements, '\ufeff') && (statements = statements[(1 + ncodeunits('\ufeff')):end])
     m = match(MIGRATION_FILE_REGEX, basename(filename))
     m === nothing && throw(ArgumentError("invalid migration filename: `$(basename(filename))`; must match `V<version>__<description>.sql`"))
     rank = parse(Int, m.captures[1])
     version = string(rank)
     description = String(m.captures[2])
-    lines = split(statements, '\n')
+    # split on \r\n, \r, or \n like Java's BufferedReader.readLine so checksums are
+    # line-ending independent, matching Flyway
     # calculated according to https://github.com/zaunerc/flyway-checksum-tool/blob/master/src/main/java/net/nllk/flywaychecksumtool/LoadableResource.java
+    lines = split(statements, r"\r\n|\r|\n")
     checksum = crc32(lines[1])
     for line in @view lines[2:end]
         checksum = crc32(line, checksum)

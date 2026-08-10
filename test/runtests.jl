@@ -156,6 +156,20 @@ using SQLite
         end
     end
 
+    @testset "checksums are line-ending and BOM independent" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__lf.sql"), "CREATE TABLE t1 (x INT);\nCREATE TABLE t2 (y INT);")
+            write(joinpath(dir, "V2__crlf.sql"), "CREATE TABLE t1 (x INT);\r\nCREATE TABLE t2 (y INT);")
+            write(joinpath(dir, "V3__cr.sql"), "CREATE TABLE t1 (x INT);\rCREATE TABLE t2 (y INT);")
+            write(joinpath(dir, "V4__bom.sql"), "\ufeffCREATE TABLE t1 (x INT);\nCREATE TABLE t2 (y INT);")
+            ms = [DBMigrations.Migration(joinpath(dir, f)) for f in ("V1__lf.sql", "V2__crlf.sql", "V3__cr.sql", "V4__bom.sql")]
+            # reference value computed with Flyway's line-by-line CRC32 algorithm
+            @test all(m.checksum == -1128550967 for m in ms)
+            # BOM must also be stripped from the statements that get executed
+            @test startswith(ms[4].statements, "CREATE")
+        end
+    end
+
     @testset "Flyway baseline row with NULL checksum" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__baseline.sql"), "CREATE TABLE t1 (x INT);")
