@@ -38,13 +38,21 @@ end
 
 Base.showerror(io::IO, e::ChecksumMismatch) = print(io, "Migration file $(e.filename) has changed since it was applied to the database. Expected checksum $(e.applied_checksum), got $(e.checksum)")
 
+struct DescriptionMismatch <: Exception
+    filename::String
+    description::String
+    applied_description::String
+end
+
+Base.showerror(io::IO, e::DescriptionMismatch) = print(io, "Migration file $(e.filename) has a different description from the migration applied to the database. Expected description $(repr(e.applied_description)), got $(repr(e.description))")
+
 struct Migration
     installed_rank::Int
     version::Union{String, Missing}
     description::String
     type::String
     script::String
-    checksum::Int
+    checksum::Union{Int, Missing}
     installed_by::String
     installed_on::Union{String, DateTime}
     execution_time::Int
@@ -53,7 +61,7 @@ struct Migration
     statements::String
 end
 
-Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, coalesce(checksum, 0), installed_by, installed_on, execution_time, success, "")
+Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success) = Migration(rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success, "")
 
 const MIGRATION_FILE_REGEX = r"^V(\d+)__(.+)\.sql$"
 
@@ -66,7 +74,8 @@ function Migration(filename::String)
     m === nothing && throw(ArgumentError("invalid migration filename: `$(basename(filename))`; must match `V<version>__<description>.sql`"))
     rank = parse(Int, m.captures[1])
     version = string(rank)
-    description = String(m.captures[2])
+    # Flyway stores descriptions with underscores replaced by spaces.
+    description = replace(String(m.captures[2]), '_' => ' ')
     # split on \r\n, \r, or \n like Java's BufferedReader.readLine so checksums are
     # line-ending independent, matching Flyway
     # calculated according to https://github.com/zaunerc/flyway-checksum-tool/blob/master/src/main/java/net/nllk/flywaychecksumtool/LoadableResource.java
@@ -79,7 +88,7 @@ function Migration(filename::String)
     return Migration(rank, version, description, "SQL", basename(filename), checksum, "DBMigrations.jl", "", 0, false, statements)
 end
 
-==(m1::Migration, m2::Migration) = m1.installed_rank == m2.installed_rank && m1.description == m2.description && m1.script == m2.script && m1.checksum == m2.checksum
+==(m1::Migration, m2::Migration) = m1.installed_rank == m2.installed_rank && m1.description == m2.description && m1.script == m2.script && isequal(m1.checksum, m2.checksum)
 
 struct DuplicateMigrationError <: Exception
     migrations::Vector{String}
@@ -102,6 +111,13 @@ Base.showerror(io::IO, e::FailedMigrationError) = print(io, "Migration $(e.scrip
 
 # normalize integer-like version strings so e.g. '05' and '5' compare equal
 versionkey(v::AbstractString) = (p = tryparse(Int, v); p === nothing ? String(v) : string(p))
+
+# DBMigrations versions before 2.2 stored the raw filename description. Accept that
+# legacy spelling while writing Flyway's space-normalized spelling for new rows.
+function legacydescription(m::Migration)
+    match_ = match(MIGRATION_FILE_REGEX, m.script)
+    return String(match_.captures[2])
+end
 
 # skip a quoted region starting at `i` (opening quote char `q`), where a doubled
 # quote is an escape; returns the index just past the closing quote
@@ -254,6 +270,11 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             rethrow()
         end
     end
+    # Any unresolved failed row means the database may contain partial changes. It
+    # must block later migrations even when its version/file is absent locally.
+    for dbm in dbmigrations
+        dbm.success || throw(FailedMigrationError(dbm.script))
+    end
     allfiles = filter(isfile, readdir(dir; join=true))
     files = filter(x -> match(MIGRATION_FILE_REGEX, basename(x)) !== nothing, allfiles)
     if !silent
@@ -291,9 +312,9 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         if dbm === nothing
             # not applied yet, so it needs to be run
             push!(migrations_to_run, m)
-        elseif !dbm.success
-            throw(FailedMigrationError(m.script))
-        elseif dbm.checksum != 0 && dbm.checksum != m.checksum
+        elseif dbm.checksum !== missing && dbm.description != m.description && dbm.description != legacydescription(m)
+            throw(DescriptionMismatch(m.script, m.description, dbm.description))
+        elseif dbm.checksum !== missing && dbm.checksum != m.checksum
             throw(ChecksumMismatch(m.script, m.checksum, dbm.checksum))
         end
     end

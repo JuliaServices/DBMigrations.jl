@@ -109,6 +109,18 @@ using SQLite
         end
     end
 
+    @testset "checksum zero is distinct from NULL" begin
+        mktempdir() do dir
+            path = joinpath(dir, "V1__empty.sql")
+            write(path, "")
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            @test only(DBMigrations.getmigrations(db)).checksum == 0
+            write(path, "CREATE TABLE changed_after_apply (x INT);")
+            @test_throws DBMigrations.ChecksumMismatch DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
     @testset "failed migration recorded in history table" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
@@ -116,6 +128,53 @@ using SQLite
             DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
             DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'first', 'SQL', 'V1__first.sql', 0, 'flyway', 10, false)")
             @test_throws DBMigrations.FailedMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+        # A failed row must also block when no local file has that version. Otherwise
+        # later migrations can run against a database with partial prior changes.
+        mktempdir() do dir
+            write(joinpath(dir, "V2__second.sql"), "CREATE TABLE t2 (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'failed', 'SQL', 'V1__failed.sql', 123, 'flyway', 10, false)")
+            @test_throws DBMigrations.FailedMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM t2")
+        end
+        # Failed repeatable rows have no version, but still represent unresolved
+        # partial database changes and must block versioned migrations.
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, NULL, 'views', 'SQL', 'R__views.sql', 123, 'flyway', 10, false)")
+            @test_throws DBMigrations.FailedMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
+    @testset "Flyway description normalization and validation" begin
+        mktempdir() do dir
+            path = joinpath(dir, "V1__create_users.sql")
+            write(path, "CREATE TABLE users (id INT);")
+            db = SQLite.DB()
+            DBMigrations.runmigrations(db, dir; silent=true)
+            @test only(DBMigrations.getmigrations(db)).description == "create users"
+
+            # Flyway validates description changes even when the SQL checksum is the
+            # same, so renaming an applied migration must not pass silently.
+            renamed = joinpath(dir, "V1__renamed.sql")
+            mv(path, renamed)
+            @test_throws DBMigrations.DescriptionMismatch DBMigrations.runmigrations(db, dir; silent=true)
+        end
+
+        # Rows written by older DBMigrations releases used raw underscores. Keep
+        # those histories readable while new rows use Flyway's spelling.
+        mktempdir() do dir
+            path = joinpath(dir, "V1__create_users.sql")
+            write(path, "CREATE TABLE users (id INT);")
+            m = DBMigrations.Migration(path)
+            db = SQLite.DB()
+            DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'create_users', 'SQL', 'V1__create_users.sql', $(m.checksum), 'DBMigrations.jl', 10, true)")
+            @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
         end
     end
 
@@ -322,8 +381,10 @@ using SQLite
             db = SQLite.DB()
             DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
             DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'baseline', 'BASELINE', 'V1__baseline.sql', NULL, 'flyway', 10, true)")
-            # baseline row means V1 counts as applied even though checksums can't be compared
+            # baseline row means V1 counts as applied even though checksums and
+            # descriptions can't be compared
             @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
+            @test only(DBMigrations.getmigrations(db)).checksum === missing
         end
     end
 end
