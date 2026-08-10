@@ -282,6 +282,14 @@ function skipblockcomment(sql, n, i)
     return j
 end
 
+function candollarquote(sql, i)
+    i == firstindex(sql) && return true
+    previous = SubString(sql, prevind(sql, i), prevind(sql, i))
+    # PostgreSQL permits dollar signs in unquoted identifiers. A dollar-quote
+    # delimiter must therefore be separated from a preceding identifier.
+    return !occursin(r"^[\p{L}\p{M}\p{Nd}_\$]$", previous)
+end
+
 """
     DBMigrations.splitsqlstatements(sql::AbstractString)
 
@@ -337,7 +345,7 @@ function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool)
             i = skipblockcomment(sql, n, i)
             executable && (hascontent = true)
             !hascontent && !hint && (stmtstart = i)
-        elseif c == '$' && (m = match(r"^\$[\p{L}\p{M}_][\p{L}\p{M}\p{Nd}_]*\$|^\$\$", SubString(sql, i)); m !== nothing)
+        elseif c == '$' && candollarquote(sql, i) && (m = match(r"^\$[\p{L}\p{M}_][\p{L}\p{M}\p{Nd}_]*\$|^\$\$", SubString(sql, i)); m !== nothing)
             hascontent = true
             closing = findnext(m.match, sql, i + ncodeunits(m.match))
             i = closing === nothing ? n + 1 : nextind(sql, last(closing))

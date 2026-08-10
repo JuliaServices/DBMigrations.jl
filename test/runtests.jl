@@ -362,6 +362,7 @@ end
         @test split_("SELECT \$\$ unterminated") == ["SELECT \$\$ unterminated"]
         # a lone $ isn't a dollar-quote
         @test split_("SELECT a\$b; SELECT 1") == ["SELECT a\$b", "SELECT 1"]
+        @test split_("SELECT foo\$tag\$bar; SELECT 1") == ["SELECT foo\$tag\$bar", "SELECT 1"]
         # dollar-quote tags may contain non-ASCII identifier characters
         @test split_("SELECT \$é\$ a; b \$é\$; SELECT 1") == ["SELECT \$é\$ a; b \$é\$", "SELECT 1"]
         # lone \r ends a line comment (CR-only files); statements after the comment
