@@ -131,6 +131,31 @@ using SQLite
         end
     end
 
+    @testset "history table with different physical column order" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
+            db = SQLite.DB()
+            # simulate a pre-existing history table whose columns are laid out in a
+            # different physical order than the schema this package creates
+            DBInterface.execute(db, """
+                CREATE TABLE $(DBMigrations.MIGRATIONS_TABLE) (
+                    success BOOLEAN NOT NULL,
+                    version VARCHAR(50),
+                    installed_rank INTEGER NOT NULL,
+                    description VARCHAR(200) NOT NULL,
+                    type VARCHAR(20) NOT NULL,
+                    script VARCHAR(1000) NOT NULL,
+                    checksum INTEGER,
+                    installed_by VARCHAR(100) NOT NULL,
+                    installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    execution_time INTEGER NOT NULL
+                );""")
+            migrations = DBMigrations.runmigrations(db, dir; silent=true)
+            @test length(migrations) == 1
+            @test isempty(DBMigrations.runmigrations(db, dir; silent=true))
+        end
+    end
+
     @testset "Flyway baseline row with NULL checksum" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__baseline.sql"), "CREATE TABLE t1 (x INT);")

@@ -92,7 +92,9 @@ end
 Base.showerror(io::IO, e::FailedMigrationError) = print(io, "Migration $(e.script) previously failed (success=false in $MIGRATIONS_TABLE). Manually repair the database and remove the failed row before re-running migrations")
 
 function getmigrations(conn)
-    results = DBInterface.execute(conn, "SELECT * FROM $MIGRATIONS_TABLE")
+    # select columns explicitly: the Migration constructor is positional, so we can't
+    # depend on the physical column order of a pre-existing (e.g. Flyway-created) table
+    results = DBInterface.execute(conn, "SELECT installed_rank, version, description, type, script, checksum, installed_by, installed_on, execution_time, success FROM $MIGRATIONS_TABLE ORDER BY installed_rank")
     return [Migration(row...) for row in results]
 end
 
