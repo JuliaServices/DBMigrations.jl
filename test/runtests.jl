@@ -259,13 +259,26 @@ end
         mktempdir() do dir
             write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
             db = SQLite.DB()
-            # a table created without the primary key (e.g. by older versions of this
-            # package) can hold duplicate ranks; runmigrations must detect them
+            # A table created without the primary key (e.g. by older versions of this
+            # package) can hold duplicate versions at different application ranks.
             DBInterface.execute(db, replace(DBMigrations.MIGRATIONS_TABLE_SCHEMA, r",\s*CONSTRAINT[^)]*\)" => ""))
-            for script in ("V1__first.sql", "V1__other.sql")
-                DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '1', 'first', 'SQL', '$script', 0, 'flyway', 10, true)")
+            for (rank, script) in enumerate(("V1__first.sql", "V1__other.sql"))
+                DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES ($rank, '1', 'first', 'SQL', '$script', 0, 'flyway', 10, true)")
             end
             @test_throws DBMigrations.DuplicateMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
+    @testset "duplicate installed ranks in history table" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V3__third.sql"), "CREATE TABLE must_not_run (x INT);")
+            db = SQLite.DB()
+            DBInterface.execute(db, replace(DBMigrations.MIGRATIONS_TABLE_SCHEMA, r",\s*CONSTRAINT[^)]*\)" => ""))
+            for (version, script) in (("1", "V1__first.sql"), ("2", "V2__second.sql"))
+                DBInterface.execute(db, "INSERT INTO $(DBMigrations.MIGRATIONS_TABLE) (installed_rank, version, description, type, script, checksum, installed_by, execution_time, success) VALUES (1, '$version', 'migration', 'SQL', '$script', 0, 'flyway', 10, true)")
+            end
+            @test_throws DBMigrations.DuplicateInstalledRankError DBMigrations.runmigrations(db, dir; silent=true)
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM must_not_run")
         end
     end
 

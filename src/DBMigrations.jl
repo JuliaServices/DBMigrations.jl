@@ -216,6 +216,12 @@ end
 
 Base.showerror(io::IO, e::DuplicateMigrationError) = print(io, "Duplicate migration version numbers detected: $(e.migrations)")
 
+struct DuplicateInstalledRankError <: Exception
+    ranks::Vector{Int}
+end
+
+Base.showerror(io::IO, e::DuplicateInstalledRankError) = print(io, "Duplicate installed_rank values detected in $MIGRATIONS_TABLE: $(e.ranks)")
+
 struct OutOfOrderMigrationError <: Exception
     migrations::Vector{String}
     maxapplied::Union{Int, String}
@@ -486,6 +492,13 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     # must block later migrations even when its version/file is absent locally.
     for dbm in dbmigrations
         dbm.success || throw(FailedMigrationError(dbm.script))
+    end
+    if !allunique(dbm.installed_rank for dbm in dbmigrations)
+        counts = Dict{Int, Int}()
+        for dbm in dbmigrations
+            counts[dbm.installed_rank] = get(counts, dbm.installed_rank, 0) + 1
+        end
+        throw(DuplicateInstalledRankError(sort!([rank for (rank, count) in counts if count > 1])))
     end
     allfiles = filter(isfile, readdir(dir; join=true))
     files = filter(x -> match(MIGRATION_FILE_REGEX, basename(x)) !== nothing, allfiles)

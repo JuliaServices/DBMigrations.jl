@@ -54,7 +54,8 @@ Supported keyword arguments to `runmigrations`:
     after `V3` was already applied); pass `true` to apply such migrations anyway
 
 Other error conditions: duplicate migration versions (in the directory or the history table) throw
-a `DuplicateMigrationError`; a migration recorded as failed in the history table (possible when
+a `DuplicateMigrationError`; duplicate history ranks throw a `DuplicateInstalledRankError`; a
+migration recorded as failed in the history table (possible when
 sharing the table with Flyway) throws a `FailedMigrationError` and requires manual repair. Renaming
 an applied migration throws a `DescriptionMismatch`. A history row with a different migration type
 throws a `TypeMismatch`. These checks are consistent with Flyway validation.
