@@ -158,6 +158,14 @@ end
 
 Base.showerror(io::IO, e::DescriptionMismatch) = print(io, "Migration file $(e.filename) has a different description from the migration applied to the database. Expected description $(repr(e.applied_description)), got $(repr(e.description))")
 
+struct TypeMismatch <: Exception
+    filename::String
+    type::String
+    applied_type::String
+end
+
+Base.showerror(io::IO, e::TypeMismatch) = print(io, "Migration file $(e.filename) has a different type from the migration applied to the database. Expected type $(repr(e.applied_type)), got $(repr(e.type))")
+
 struct Migration
     installed_rank::Int
     version::Union{String, Missing}
@@ -489,7 +497,13 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             # Versions at or below a Flyway baseline are represented by that baseline
             # row and must not be run against the existing database state.
             (baselineversion === nothing || m.installed_rank > baselineversion) && push!(migrations_to_run, m)
-        elseif dbm.checksum !== missing && dbm.description != m.description && dbm.description != legacydescription(m)
+        elseif uppercase(dbm.type) == "BASELINE"
+            # A baseline is synthetic. It represents the database state rather than
+            # the local SQL file at the same version, so Flyway does not validate it.
+            continue
+        elseif uppercase(dbm.type) != uppercase(m.type)
+            throw(TypeMismatch(m.script, m.type, dbm.type))
+        elseif dbm.description != m.description && dbm.description != legacydescription(m)
             throw(DescriptionMismatch(m.script, m.description, dbm.description))
         elseif dbm.checksum !== missing && dbm.checksum != m.checksum
             throw(ChecksumMismatch(m.script, m.checksum, dbm.checksum))

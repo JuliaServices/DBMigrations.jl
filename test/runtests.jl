@@ -231,6 +231,30 @@ end
         end
     end
 
+    @testset "Flyway type and NULL checksum validation" begin
+        mktempdir() do dir
+            path = joinpath(dir, "V1__first.sql")
+            write(path, "CREATE TABLE t1 (x INT);")
+            localmigration = DBMigrations.Migration(path)
+
+            # A Flyway Java migration and a local SQL migration are not the same
+            # migration, even when their version, description, and checksum match.
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            applied = DBMigrations.Migration(1, "1", "first", "JDBC", "V1__first.sql", localmigration.checksum, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, applied, 1, 0)
+            @test_throws DBMigrations.TypeMismatch DBMigrations.runmigrations(db, dir; silent=true)
+
+            # Flyway treats a NULL applied checksum as matching, but it still checks
+            # the description for ordinary SQL migrations.
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            applied = DBMigrations.Migration(1, "1", "renamed", "SQL", "V1__first.sql", missing, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, applied, 1, 0)
+            @test_throws DBMigrations.DescriptionMismatch DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
     @testset "duplicate versions in history table" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")

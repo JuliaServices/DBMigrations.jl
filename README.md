@@ -56,7 +56,8 @@ Supported keyword arguments to `runmigrations`:
 Other error conditions: duplicate migration versions (in the directory or the history table) throw
 a `DuplicateMigrationError`; a migration recorded as failed in the history table (possible when
 sharing the table with Flyway) throws a `FailedMigrationError` and requires manual repair. Renaming
-an applied migration throws a `DescriptionMismatch`, consistent with Flyway validation.
+an applied migration throws a `DescriptionMismatch`. A history row with a different migration type
+throws a `TypeMismatch`. These checks are consistent with Flyway validation.
 
 `DBMigrations.clean!(conn; confirm=true)` drops and recreates the history table, forgetting all
 record of applied migrations (it does *not* undo the migrations themselves).
