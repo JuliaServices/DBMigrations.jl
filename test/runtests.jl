@@ -440,6 +440,7 @@ end
         @test DBMigrations.ismysqlconnection(MySQL.Connection())
         @test mysqlsplit("SELECT 1; # comment; still a comment\nSELECT 2;") == ["SELECT 1", "SELECT 2"]
         @test mysqlsplit("SELECT 2--1; SELECT 3") == ["SELECT 2--1", "SELECT 3"]
+        @test mysqlsplit("/* outer /* inner */ SELECT 1; SELECT 2") == ["SELECT 1", "SELECT 2"]
     end
 
     @testset "statement splitting during migration" begin
@@ -453,11 +454,15 @@ end
             # after the first -- comment was silently lost)
             write(joinpath(dir, "V2__cr_only.sql"), "CREATE TABLE crt (x INT);\r-- seed\rINSERT INTO crt VALUES (1);\r")
             write(joinpath(dir, "V3__inline_cr.sql"), "CREATE TABLE inline_cr (x INT, -- keep y\ry INT);")
+            # SQLite ends a block comment at the first */, even if the comment text
+            # contains another /* opener. PostgreSQL instead supports nesting.
+            write(joinpath(dir, "V4__non_nested_comment.sql"), "/* outer /* inner */ CREATE TABLE after_comment (x INT);")
             db = SQLite.DB()
-            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 3
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 4
             @test [r.txt for r in DBInterface.execute(db, "SELECT txt FROM notes")] == ["semi;colons; galore"]
             @test [r.x for r in DBInterface.execute(db, "SELECT x FROM crt")] == [1]
             @test [r.name for r in DBInterface.execute(db, "PRAGMA table_info(inline_cr)")] == ["x", "y"]
+            @test isempty(DBInterface.execute(db, "SELECT * FROM after_comment"))
         end
     end
 

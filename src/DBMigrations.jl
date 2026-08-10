@@ -319,7 +319,7 @@ end
 
 # skip a `/* */` block comment starting at `i`, honoring nesting (Postgres);
 # returns the index just past the closing `*/`
-function skipblockcomment(sql, n, i)
+function skipblockcomment(sql, n, i, nestedcomments)
     j = nextind(sql, nextind(sql, i))
     depth = 1
     while j <= n && depth > 0
@@ -328,7 +328,7 @@ function skipblockcomment(sql, n, i)
         if c == '*' && k <= n && sql[k] == '/'
             depth -= 1
             j = nextind(sql, k)
-        elseif c == '/' && k <= n && sql[k] == '*'
+        elseif nestedcomments && c == '/' && k <= n && sql[k] == '*'
             depth += 1
             j = nextind(sql, k)
         else
@@ -360,7 +360,9 @@ backslash-escaped quotes (e.g. MySQL's default `\\'`) are not recognized — use
 """
 splitsqlstatements(sql::AbstractString) = splitsqlstatements(sql, false)
 
-function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool)
+splitsqlstatements(sql::AbstractString, mysqlcomments::Bool) = splitsqlstatements(sql, mysqlcomments, !mysqlcomments)
+
+function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool, nestedcomments::Bool)
     statements = String[]
     n = lastindex(sql)
     stmtstart = firstindex(sql)
@@ -398,7 +400,7 @@ function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool)
             marker = after <= n ? sql[after] : '\0'
             executable = marker == '!'
             hint = marker == '+'
-            i = skipblockcomment(sql, n, i)
+            i = skipblockcomment(sql, n, i, nestedcomments)
             executable && (hascontent = true)
             !hascontent && !hint && (stmtstart = i)
         elseif c == '$' && candollarquote(sql, i) && (m = match(r"^\$[\p{L}\p{M}_][\p{L}\p{M}\p{Nd}_]*\$|^\$\$", SubString(sql, i)); m !== nothing)
@@ -571,7 +573,9 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             start = time()
             silent || @info "Applying migrations from file: $(m.script)"
             if splitstatements
-                for statement in splitsqlstatements(m.statements, ismysqlconnection(conn))
+                mysqlcomments = ismysqlconnection(conn)
+                nestedcomments = !mysqlcomments && !issqliteconnection(conn)
+                for statement in splitsqlstatements(m.statements, mysqlcomments, nestedcomments)
                     executecommand(conn, statement)
                 end
             else
