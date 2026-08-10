@@ -1,6 +1,6 @@
 name = "DBMigrations"
 uuid = "277cf75d-8bce-46ef-b2a4-258a2479b121"
-version = "2.1.0"
+version = "2.2.0"
 
 [deps]
 CRC32 = "b4567568-9dcc-467e-9b62-c342d3a501d3"
@@ -9,7 +9,7 @@ Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 
 [compat]
 CRC32 = "1"
-DBInterface = "2.5"
+DBInterface = "2.6"
 julia = "1.6"
 
 [extras]
