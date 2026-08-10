@@ -144,6 +144,10 @@ Split `sql` into individual statements on semicolons, ignoring semicolons that a
 inside single-quoted strings, double-quoted or backtick-quoted identifiers, line (`--`)
 and block (`/* */`, nesting allowed) comments, and Postgres dollar-quoted (`\$tag\$`)
 blocks. Chunks containing only whitespace/comments are dropped.
+
+Quotes are escaped by doubling (`''`), per the SQL standard; non-standard
+backslash-escaped quotes (e.g. MySQL's default `\\'`) are not recognized — use `''` or
+`splitstatements=false` for such files.
 """
 function splitsqlstatements(sql::AbstractString)
     statements = String[]
@@ -185,7 +189,7 @@ function getmigrations(conn)
 end
 
 """
-    DBMigrations.runmigrations(conn::DBInterface.Connection, dir::String)
+    DBMigrations.runmigrations(conn::DBInterface.Connection, dir::String; silent=false, splitstatements=true, allowoutoforder=false)
 
 Using an established database connection `conn` (which should have the appropriate schema already
 selected), search the directory `dir` for migration files and apply them to the database. Migration
@@ -239,12 +243,12 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             rethrow()
         end
     end
-    allfiles = readdir(dir; join=true)
+    allfiles = filter(isfile, readdir(dir; join=true))
     files = filter(x -> match(MIGRATION_FILE_REGEX, basename(x)) !== nothing, allfiles)
     if !silent
         # .sql files that don't match the migration naming pattern are easy to mistake
         # for migrations, so call them out instead of silently ignoring them
-        skipped = [basename(x) for x in allfiles if endswith(x, ".sql") && match(MIGRATION_FILE_REGEX, basename(x)) === nothing]
+        skipped = [basename(x) for x in allfiles if endswith(lowercase(x), ".sql") && match(MIGRATION_FILE_REGEX, basename(x)) === nothing]
         isempty(skipped) || @warn "Ignoring .sql files that don't match the `V<version>__<description>.sql` migration naming pattern: $skipped"
     end
     migrations = sort!(map(Migration, files), by=x->x.installed_rank)

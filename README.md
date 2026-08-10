@@ -67,6 +67,9 @@ record of applied migrations (it does *not* undo the migrations themselves).
     migration may leave earlier DDL statements applied).
   * Only versioned migrations are supported (no Flyway-style repeatable `R__` migrations or undo
     migrations).
+  * The statement splitter recognizes standard `''` quote escaping but not non-standard
+    backslash-escaped quotes (e.g. MySQL's default `\'`); use `''` doubling or
+    `splitstatements=false` for such files.
 
 ## Example
 
