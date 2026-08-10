@@ -218,7 +218,7 @@ Base.showerror(io::IO, e::DuplicateMigrationError) = print(io, "Duplicate migrat
 
 struct OutOfOrderMigrationError <: Exception
     migrations::Vector{String}
-    maxapplied::Int
+    maxapplied::Union{Int, String}
 end
 
 Base.showerror(io::IO, e::OutOfOrderMigrationError) = print(io, "Out-of-order migrations detected: $(e.migrations) have versions lower than the highest already-applied migration version ($(e.maxapplied)). Pass `allowoutoforder=true` to apply them anyway")
@@ -229,8 +229,44 @@ end
 
 Base.showerror(io::IO, e::FailedMigrationError) = print(io, "Migration $(e.script) previously failed (success=false in $MIGRATIONS_TABLE). Manually repair the database and remove the failed row before re-running migrations")
 
-# normalize integer-like version strings so e.g. '05' and '5' compare equal
-versionkey(v::AbstractString) = (p = tryparse(Int, v); p === nothing ? String(v) : string(p))
+# Flyway versions contain numeric components separated by dots (underscores are
+# normalized to dots). Trailing zero components do not affect equality.
+function flywayversionparts(v::AbstractString)
+    parts = BigInt[]
+    for part in split(replace(v, '_' => '.'), '.'; keepempty=true)
+        parsed = tryparse(BigInt, part)
+        parsed === nothing && return nothing
+        push!(parts, parsed)
+    end
+    while length(parts) > 1 && last(parts) == 0
+        pop!(parts)
+    end
+    return parts
+end
+
+function compareversions(a::Vector{BigInt}, b::Vector{BigInt})
+    for i = 1:max(length(a), length(b))
+        avalue = i <= length(a) ? a[i] : BigInt(0)
+        bvalue = i <= length(b) ? b[i] : BigInt(0)
+        avalue < bvalue && return -1
+        avalue > bvalue && return 1
+    end
+    return 0
+end
+
+function versionkey(v::AbstractString)
+    parts = flywayversionparts(v)
+    return parts === nothing ? String(v) : join(parts, '.')
+end
+
+localversionparts(m::Migration) = BigInt[BigInt(m.installed_rank)]
+
+function versiondisplay(parts, original)
+    if length(parts) == 1 && typemin(Int) <= parts[1] <= typemax(Int)
+        return Int(parts[1])
+    end
+    return String(original)
+end
 
 # DBMigrations versions before 2.2 stored the raw filename description. Accept that
 # legacy spelling while writing Flyway's space-normalized spelling for new rows.
@@ -481,14 +517,16 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     end
     # A Flyway baseline declares every lower version already represented by the
     # database state even though those versions have no individual history rows.
-    baselineversions = Int[]
+    baselineversion = nothing
     for dbm in dbmigrations
         dbm.version === missing && continue
         uppercase(dbm.type) == "BASELINE" || continue
-        p = tryparse(Int, dbm.version)
-        p === nothing || push!(baselineversions, p)
+        parts = flywayversionparts(dbm.version)
+        parts === nothing && continue
+        if baselineversion === nothing || compareversions(parts, baselineversion[1]) > 0
+            baselineversion = (parts, dbm.version)
+        end
     end
-    baselineversion = isempty(baselineversions) ? nothing : maximum(baselineversions)
     # filter out migrations that have already been applied
     migrations_to_run = Migration[]
     for m in migrations
@@ -496,7 +534,7 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
         if dbm === nothing
             # Versions at or below a Flyway baseline are represented by that baseline
             # row and must not be run against the existing database state.
-            (baselineversion === nothing || m.installed_rank > baselineversion) && push!(migrations_to_run, m)
+            (baselineversion === nothing || compareversions(localversionparts(m), baselineversion[1]) > 0) && push!(migrations_to_run, m)
         elseif uppercase(dbm.type) == "BASELINE"
             # A baseline is synthetic. It represents the database state rather than
             # the local SQL file at the same version, so Flyway does not validate it.
@@ -512,16 +550,18 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
     # by default, refuse to apply migrations with versions lower than the highest
     # already-applied version; the old scan-based matching silently *re-ran*
     # already-applied migrations in this situation
-    appliedversions = Int[]
+    maxapplied = nothing
     for dbm in dbmigrations
         dbm.version === missing && continue
-        p = tryparse(Int, dbm.version)
-        p === nothing || push!(appliedversions, p)
+        parts = flywayversionparts(dbm.version)
+        parts === nothing && continue
+        if maxapplied === nothing || compareversions(parts, maxapplied[1]) > 0
+            maxapplied = (parts, dbm.version)
+        end
     end
-    if !allowoutoforder && !isempty(appliedversions)
-        maxapplied = maximum(appliedversions)
-        outoforder = [m.script for m in migrations_to_run if m.installed_rank < maxapplied]
-        isempty(outoforder) || throw(OutOfOrderMigrationError(outoforder, maxapplied))
+    if !allowoutoforder && maxapplied !== nothing
+        outoforder = [m.script for m in migrations_to_run if compareversions(localversionparts(m), maxapplied[1]) < 0]
+        isempty(outoforder) || throw(OutOfOrderMigrationError(outoforder, versiondisplay(maxapplied...)))
     end
     # run migrations; installed_rank records application order (max existing rank + 1
     # onwards), matching Flyway's semantics for the column

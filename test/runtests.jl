@@ -535,6 +535,35 @@ end
         end
     end
 
+    @testset "Flyway numeric version semantics" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "SELECT 1;")
+            write(joinpath(dir, "V2__second.sql"), "SELECT 2;")
+            firstmigration = DBMigrations.Migration(joinpath(dir, "V1__first.sql"))
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            applied = DBMigrations.Migration(1, "1.0", firstmigration.description, "SQL", firstmigration.script, firstmigration.checksum, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, applied, 1, 0)
+
+            # Flyway normalizes trailing zero components, so 1.0 is the same
+            # version as local V1. Only V2 is pending.
+            @test [m.script for m in DBMigrations.runmigrations(db, dir; silent=true)] == ["V2__second.sql"]
+        end
+
+        mktempdir() do dir
+            write(joinpath(dir, "V1__first.sql"), "SELECT 1;")
+            write(joinpath(dir, "V2__second.sql"), "SELECT 2;")
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            applied = DBMigrations.Migration(1, "1.1", "dotted", "SQL", "V1_1__dotted.sql", 123, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, applied, 1, 0)
+
+            # V1 is older than Flyway version 1.1 and must trigger the same
+            # out-of-order guard as an applied integer version.
+            @test_throws DBMigrations.OutOfOrderMigrationError DBMigrations.runmigrations(db, dir; silent=true)
+        end
+    end
+
     @testset "Flyway repeatable migration row with NULL version" begin
         mktempdir() do dir
             write(joinpath(dir, "V2__second.sql"), "CREATE TABLE t2 (x INT);")
@@ -575,6 +604,18 @@ end
             @test isempty(DBInterface.execute(db, "SELECT * FROM after_baseline"))
             @test [(r.installed_rank, r.version) for r in DBInterface.execute(db, "SELECT installed_rank, version FROM $(DBMigrations.MIGRATIONS_TABLE) ORDER BY installed_rank")] ==
                 [(1, "5"), (2, "6")]
+        end
+
+
+        mktempdir() do dir
+            write(joinpath(dir, "V1__before_dotted_baseline.sql"), "CREATE TABLE must_not_run (x INT);")
+            write(joinpath(dir, "V2__after_dotted_baseline.sql"), "CREATE TABLE after_dotted_baseline (x INT);")
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            applied = DBMigrations.Migration(1, "1.1", "<< Flyway Baseline >>", "BASELINE", "<< Flyway Baseline >>", missing, "flyway", "", 0, true, "")
+            DBMigrations.insertmigration!(db, applied, 1, 0)
+            @test [m.script for m in DBMigrations.runmigrations(db, dir; silent=true)] == ["V2__after_dotted_baseline.sql"]
+            @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM must_not_run")
         end
     end
 end
