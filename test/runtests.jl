@@ -399,6 +399,18 @@ end
         end
     end
 
+    @testset "statement splitting escape hatch" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__source.sql"), "CREATE TABLE source (value INT);")
+            write(joinpath(dir, "V2__audit.sql"), "CREATE TABLE audit (value INT);")
+            write(joinpath(dir, "V3__trigger.sql"), "CREATE TRIGGER audit_insert AFTER INSERT ON source BEGIN INSERT INTO audit VALUES (NEW.value); END;")
+            db = SQLite.DB()
+            @test length(DBMigrations.runmigrations(db, dir; silent=true, splitstatements=false)) == 3
+            DBInterface.execute(db, "INSERT INTO source VALUES (42)")
+            @test [row.value for row in DBInterface.execute(db, "SELECT value FROM audit")] == [42]
+        end
+    end
+
     @testset "description charset and non-matching .sql files" begin
         mktempdir() do dir
             # hyphens/dots in descriptions are valid (Flyway allows them)
