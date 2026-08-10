@@ -532,11 +532,9 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
             silent || @info "Applying migrations from file: $(m.script)"
             if splitstatements
                 for statement in splitsqlstatements(m.statements, ismysqlconnection(conn))
-                    silent || @info "Applying migration statement:\n$statement"
                     executecommand(conn, statement)
                 end
             else
-                silent || @info "Applying migration statement:\n$(m.statements)"
                 executecommand(conn, m.statements)
             end
             insertmigration!(conn, m, nextrank, round(Int, (time() - start) * 1000))

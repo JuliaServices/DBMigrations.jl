@@ -473,6 +473,17 @@ end
         end
     end
 
+    @testset "migration SQL is not logged" begin
+        mktempdir() do dir
+            write(joinpath(dir, "V1__secret.sql"), "CREATE TABLE credentials (token TEXT); INSERT INTO credentials VALUES ('top-secret');")
+            db = SQLite.DB()
+            DBMigrations.executecommand(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)
+            @test_logs (:info, "Applying migrations from file: V1__secret.sql") (:info, "Applied migrations from file: V1__secret.sql") begin
+                DBMigrations.runmigrations(db, dir)
+            end
+        end
+    end
+
     @testset "description charset and non-matching .sql files" begin
         mktempdir() do dir
             # hyphens/dots in descriptions are valid (Flyway allows them)
