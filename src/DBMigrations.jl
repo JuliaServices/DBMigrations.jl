@@ -170,8 +170,13 @@ function splitsqlstatements(sql::AbstractString)
         elseif c == '-' && (k = nextind(sql, i); k <= n && sql[k] == '-')
             # a lone \r is a line ending too (consistent with the checksum algorithm)
             i = something(findnext(x -> x == '\n' || x == '\r', sql, k), n + 1)
+            # never emit a statement that *starts* with a comment: some drivers'
+            # tokenizers (e.g. SQLite's, which ends -- comments only at \n) could
+            # see the whole statement as a comment and fail on it
+            hascontent || (stmtstart = i)
         elseif c == '/' && (k = nextind(sql, i); k <= n && sql[k] == '*')
             i = skipblockcomment(sql, n, i)
+            hascontent || (stmtstart = i)
         elseif c == '$' && (m = match(r"^\$[\p{L}\p{M}_][\p{L}\p{M}\p{Nd}_]*\$|^\$\$", SubString(sql, i)); m !== nothing)
             hascontent = true
             closing = findnext(m.match, sql, i + ncodeunits(m.match))
@@ -206,8 +211,8 @@ Migration files found in `dir` will be checked against a special `$MIGRATIONS_TA
 the DBMigrations.jl package manages in the database connection for tracking which migrations have
 already been applied. History rows are matched to local files by version; the `installed_rank`
 column records application order (Flyway's semantics for the column, so a history table
-previously managed by Flyway can be picked up). If a migration file is found in `dir` that has not been
-applied to the database. If a migration file is found in `dir` that has already been applied, it
+previously managed by Flyway can be picked up). If a migration file is found in `dir` that has not
+been applied, it will be applied to the database. If a migration file is found in `dir` that has already been applied, it
 will be skipped. If a migration file is found in `dir` that has been applied but has changed since
 it was applied, an error will be thrown (migrations should be immutable once applied).
 

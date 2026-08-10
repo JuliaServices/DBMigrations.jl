@@ -207,7 +207,11 @@ using SQLite
         # semicolons inside comments
         @test split_("SELECT 1 -- not; a separator\n; SELECT 2") == ["SELECT 1 -- not; a separator", "SELECT 2"]
         @test split_("SELECT 1 /* not; a separator */; SELECT 2") == ["SELECT 1 /* not; a separator */", "SELECT 2"]
-        @test split_("/* nested /* block; */ comment; */ SELECT 1") == ["/* nested /* block; */ comment; */ SELECT 1"]
+        # leading comments are trimmed from emitted statements (SQLite's tokenizer
+        # ends -- comments only at \n, so a statement starting with a comment can be
+        # parsed as all-comment and fail)
+        @test split_("/* nested /* block; */ comment; */ SELECT 1") == ["SELECT 1"]
+        @test split_("-- leading\nSELECT 1; -- inter\nSELECT 2") == ["SELECT 1", "SELECT 2"]
         # Postgres dollar-quoted bodies
         @test split_("CREATE FUNCTION f() RETURNS void AS \$\$ BEGIN PERFORM 1; END; \$\$ LANGUAGE plpgsql; SELECT 1") ==
             ["CREATE FUNCTION f() RETURNS void AS \$\$ BEGIN PERFORM 1; END; \$\$ LANGUAGE plpgsql", "SELECT 1"]
@@ -227,7 +231,7 @@ using SQLite
         # lone \r ends a line comment (CR-only files); statements after the comment
         # used to be silently swallowed into it and never executed
         @test split_("CREATE TABLE t (x INT);\r-- seed\rINSERT INTO t VALUES (1);\r") ==
-            ["CREATE TABLE t (x INT)", "-- seed\rINSERT INTO t VALUES (1)"]
+            ["CREATE TABLE t (x INT)", "INSERT INTO t VALUES (1)"]
     end
 
     @testset "statement splitting during migration" begin
@@ -237,9 +241,13 @@ using SQLite
                 INSERT INTO notes VALUES ('semi;colons; galore');
                 -- trailing comment
                 """)
+            # a CR-only file must fully execute end-to-end (regression: everything
+            # after the first -- comment was silently lost)
+            write(joinpath(dir, "V2__cr_only.sql"), "CREATE TABLE crt (x INT);\r-- seed\rINSERT INTO crt VALUES (1);\r")
             db = SQLite.DB()
-            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 1
+            @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 2
             @test [r.txt for r in DBInterface.execute(db, "SELECT txt FROM notes")] == ["semi;colons; galore"]
+            @test [r.x for r in DBInterface.execute(db, "SELECT x FROM crt")] == [1]
         end
     end
 
