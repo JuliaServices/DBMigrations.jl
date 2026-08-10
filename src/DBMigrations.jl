@@ -168,10 +168,11 @@ function splitsqlstatements(sql::AbstractString)
             hascontent = true
             i = skipquoted(sql, n, i, c)
         elseif c == '-' && (k = nextind(sql, i); k <= n && sql[k] == '-')
-            i = something(findnext(==('\n'), sql, k), n + 1)
+            # a lone \r is a line ending too (consistent with the checksum algorithm)
+            i = something(findnext(x -> x == '\n' || x == '\r', sql, k), n + 1)
         elseif c == '/' && (k = nextind(sql, i); k <= n && sql[k] == '*')
             i = skipblockcomment(sql, n, i)
-        elseif c == '$' && (m = match(r"^\$[A-Za-z_][A-Za-z_0-9]*\$|^\$\$", SubString(sql, i)); m !== nothing)
+        elseif c == '$' && (m = match(r"^\$[\p{L}\p{M}_][\p{L}\p{M}\p{Nd}_]*\$|^\$\$", SubString(sql, i)); m !== nothing)
             hascontent = true
             closing = findnext(m.match, sql, i + ncodeunits(m.match))
             i = closing === nothing ? n + 1 : nextind(sql, last(closing))

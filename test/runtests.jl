@@ -222,6 +222,12 @@ using SQLite
         @test split_("SELECT \$\$ unterminated") == ["SELECT \$\$ unterminated"]
         # a lone $ isn't a dollar-quote
         @test split_("SELECT a\$b; SELECT 1") == ["SELECT a\$b", "SELECT 1"]
+        # dollar-quote tags may contain non-ASCII identifier characters
+        @test split_("SELECT \$é\$ a; b \$é\$; SELECT 1") == ["SELECT \$é\$ a; b \$é\$", "SELECT 1"]
+        # lone \r ends a line comment (CR-only files); statements after the comment
+        # used to be silently swallowed into it and never executed
+        @test split_("CREATE TABLE t (x INT);\r-- seed\rINSERT INTO t VALUES (1);\r") ==
+            ["CREATE TABLE t (x INT)", "-- seed\rINSERT INTO t VALUES (1)"]
     end
 
     @testset "statement splitting during migration" begin
