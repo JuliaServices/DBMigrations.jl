@@ -347,6 +347,16 @@ end
         end
     end
 
+    @testset "migration identity equality" begin
+        m1 = DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "one", "", 0, false, "SELECT 1")
+        same = DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "two", "2026-01-01", 99, true, "")
+        differenttype = DBMigrations.Migration(1, "1", "first", "JDBC", "V1__first.sql", 123, "one", "", 0, false, "")
+        @test m1 == same
+        @test hash(m1) == hash(same)
+        @test length(Set((m1, same))) == 1
+        @test m1 != differenttype
+    end
+
     @testset "history values with embedded quotes are escaped" begin
         db = SQLite.DB()
         DBInterface.execute(db, DBMigrations.MIGRATIONS_TABLE_SCHEMA)

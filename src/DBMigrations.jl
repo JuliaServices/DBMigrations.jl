@@ -213,7 +213,9 @@ function Migration(filename::String)
     return Migration(rank, version, description, "SQL", basename(filename), checksum, "DBMigrations.jl", "", 0, false, statements)
 end
 
-==(m1::Migration, m2::Migration) = m1.installed_rank == m2.installed_rank && m1.description == m2.description && m1.script == m2.script && isequal(m1.checksum, m2.checksum)
+==(m1::Migration, m2::Migration) = m1.installed_rank == m2.installed_rank && isequal(m1.version, m2.version) && m1.description == m2.description && m1.type == m2.type && m1.script == m2.script && isequal(m1.checksum, m2.checksum)
+
+Base.hash(m::Migration, h::UInt) = hash((m.installed_rank, m.version, m.description, m.type, m.script, m.checksum), h)
 
 struct DuplicateMigrationError <: Exception
     migrations::Vector{String}
