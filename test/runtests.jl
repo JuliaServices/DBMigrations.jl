@@ -29,6 +29,31 @@ import DBInterface
 struct Connection <: DBInterface.Connection end
 end
 
+# ODBC.Cursor intentionally has no DBInterface.close! method in ODBC.jl. This
+# stand-in verifies that DBMigrations closes the owning statement instead.
+module ODBC
+import DBInterface
+
+mutable struct Connection <: DBInterface.Connection
+    executions::Vector{Tuple{String, Any}}
+    closed::Int
+end
+
+struct Statement <: DBInterface.Statement
+    conn::Connection
+    sql::String
+end
+
+struct Cursor end
+
+DBInterface.prepare(conn::Connection, sql::AbstractString) = Statement(conn, String(sql))
+function DBInterface.execute(statement::Statement, params=())
+    push!(statement.conn.executions, (statement.sql, params))
+    return Cursor()
+end
+DBInterface.close!(statement::Statement) = (statement.conn.closed += 1)
+end
+
 @testset "DBMigrations" begin
     @testset "SQLite" begin
         db = SQLite.DB()
@@ -323,6 +348,19 @@ end
         @test params == (7, "1", "backslash\\'quote", "SQL", "V1__backslash\\'quote.sql", 123, "DBMigrations.jl", 9, Int8(1))
         @test !occursin("backslash", sql)
         @test conn.closed == 5
+    end
+
+    @testset "ODBC cursor compatibility" begin
+        conn = ODBC.Connection(Tuple{String, Any}[], 0)
+        @test DBMigrations.executewithcursor(_ -> 42, conn, "SELECT 1") == 42
+        @test conn.closed == 1
+
+        m = DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "DBMigrations.jl", "", 0, false, "")
+        DBMigrations.insertmigration!(conn, m, 1, 5)
+        sql, params = last(conn.executions)
+        @test occursin("VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", sql)
+        @test params == (1, "1", "first", "SQL", "V1__first.sql", 123, "DBMigrations.jl", 5, Int8(1))
+        @test conn.closed == 2
     end
 
     @testset "splitsqlstatements" begin

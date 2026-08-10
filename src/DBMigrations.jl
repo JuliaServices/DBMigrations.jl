@@ -68,7 +68,19 @@ function executewithcursor(f, conn, sql, params=nothing)
         end
     end
     actualparams = params === nothing ? () : params
-    return DBInterface.execute(f, conn, sql, actualparams)
+    statement = DBInterface.prepare(conn, sql)
+    try
+        cursor = DBInterface.execute(statement, actualparams)
+        try
+            return f(cursor)
+        finally
+            # ODBC.Cursor has no close! method. Closing its statement below releases
+            # the handle after the callback has consumed the rows.
+            closecursor(cursor)
+        end
+    finally
+        closecursor(statement)
+    end
 end
 
 function executecommand(conn, sql)
