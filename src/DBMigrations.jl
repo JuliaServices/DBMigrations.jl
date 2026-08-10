@@ -185,6 +185,11 @@ Migration(rank, version, description, type, script, checksum, installed_by, inst
 
 const MIGRATION_FILE_REGEX = r"^V(\d+)__(.+)\.sql$"
 
+function abbreviatedescription(description::String)
+    length(description) <= 200 && return description
+    return first(description, 197) * "..."
+end
+
 # filename matches MIGRATION_FILE_REGEX
 function Migration(filename::String)
     statements = read(filename, String)
@@ -195,7 +200,7 @@ function Migration(filename::String)
     rank = parse(Int, m.captures[1])
     version = string(rank)
     # Flyway stores descriptions with underscores replaced by spaces.
-    description = replace(String(m.captures[2]), '_' => ' ')
+    description = abbreviatedescription(replace(String(m.captures[2]), '_' => ' '))
     # split on \r\n, \r, or \n like Java's BufferedReader.readLine so checksums are
     # line-ending independent, matching Flyway
     # calculated according to https://github.com/zaunerc/flyway-checksum-tool/blob/master/src/main/java/net/nllk/flywaychecksumtool/LoadableResource.java

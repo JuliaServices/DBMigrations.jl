@@ -514,6 +514,16 @@ end
             @test migrations[1].description == "add-index.v2"
             @test_throws SQLiteException DBInterface.execute(db, "SELECT * FROM t2")
         end
+
+        mktempdir() do dir
+            description = repeat("a", 201)
+            write(joinpath(dir, "V1__$(description).sql"), "SELECT 1;")
+            db = SQLite.DB()
+            migration = only(DBMigrations.runmigrations(db, dir; silent=true))
+            expected = repeat("a", 197) * "..."
+            @test migration.description == expected
+            @test only(DBMigrations.getmigrations(db)).description == expected
+        end
     end
 
     @testset "clean!" begin
