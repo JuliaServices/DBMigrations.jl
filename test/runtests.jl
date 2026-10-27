@@ -48,6 +48,11 @@ end
 
 struct Result end
 
+# Postgres.jl reads TIMESTAMP columns as Durations.Timestamp, not Dates.DateTime
+struct Timestamp
+    value::Int64
+end
+
 DBInterface.prepare(conn::Connection, sql::AbstractString) = Statement(conn, String(sql))
 function DBInterface.execute(statement::Statement, params=())
     occursin('?', statement.sql) && error("Postgres syntax error at or near \"?\": only \$1-style placeholders are supported")
@@ -466,6 +471,10 @@ end
             error("migration failed")
         end
         @test conn.transactions == ["BEGIN", "ROLLBACK"]
+
+        # history rows keep the driver's timestamp type (MySQL.jl 2.x also returns a Timestamp)
+        ts = Postgres.Timestamp(0)
+        @test DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "x", ts, 10, true).installed_on === ts
     end
 
     @testset "ODBC cursor compatibility" begin
