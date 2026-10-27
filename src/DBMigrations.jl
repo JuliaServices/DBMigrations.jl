@@ -501,8 +501,10 @@ it was applied, an error will be thrown (migrations should be immutable once app
 Migration files may contain multiple SQL statements, separated by semicolons. Each statement will
 be executed in order. If any statement fails, the entire migration will be rolled back and an error
 will be thrown. If a migration file contains a syntax error, the migration will be rolled back and
-an error will be thrown. Semicolons inside single-quoted strings, quoted identifiers, `--` and
-`/* */` comments, and Postgres dollar-quoted blocks are not treated as statement separators.
+an error will be thrown. MySQL commits implicitly at each DDL statement, so there a failed
+migration that contains DDL can keep the statements that ran before the failure. Semicolons
+inside single-quoted strings, quoted identifiers, `--` and `/* */` comments, and Postgres
+dollar-quoted blocks are not treated as statement separators.
 
 Supported keyword arguments:
   * `silent::Bool=false`: suppress informational logging while applying migrations
