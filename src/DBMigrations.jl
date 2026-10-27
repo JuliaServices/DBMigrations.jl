@@ -1,6 +1,6 @@
 module DBMigrations
 
-using DBInterface, CRC32, Dates
+using DBInterface, CRC32
 
 import Base: ==
 
@@ -184,7 +184,7 @@ struct Migration
     script::String
     checksum::Union{Int, Missing}
     installed_by::String
-    installed_on::Union{String, DateTime}
+    installed_on::Any # as the driver reads it: String, DateTime, Durations.Timestamp, ...
     execution_time::Int
     success::Bool
     # non-db-stored fields
