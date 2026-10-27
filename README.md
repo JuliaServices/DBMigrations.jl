@@ -39,7 +39,8 @@ Migration files may contain multiple SQL statements, separated by semicolons. Ea
 be executed in order. Semicolons inside single-quoted strings, quoted identifiers, `--`/`/* */`
 comments, and Postgres dollar-quoted blocks are handled correctly. Direct MySQL connections also
 use MySQL's `#` and whitespace-sensitive `--` comment rules. Each migration file is applied
-in a transaction: if any statement fails, the migration is rolled back and the error rethrown.
+in a transaction: if any statement fails, the migration is rolled back and the error rethrown
+(on MySQL, not once a DDL statement has run; see Limitations).
 
 Supported keyword arguments to `runmigrations`:
 
@@ -66,10 +67,14 @@ record of applied migrations (it does *not* undo the migrations themselves).
 ## Limitations
 
   * No locking is performed: if multiple processes run migrations against the same database
-    concurrently, they may race. Coordinate deployments externally.
+    concurrently, they may race. Coordinate deployments externally. The history table's primary
+    key on `installed_rank` makes a losing runner fail instead of recording a migration twice.
+    History tables created by DBMigrations before 2.2 have no primary key; on PostgreSQL or MySQL,
+    add it with `ALTER TABLE flyway_schema_history ADD PRIMARY KEY (installed_rank)`.
   * Transactional rollback of failed migrations depends on the database supporting transactional
-    DDL (SQLite and PostgreSQL do; MySQL auto-commits DDL statements, so a failed multi-statement
-    migration may leave earlier DDL statements applied).
+    DDL. SQLite and PostgreSQL do. MySQL commits implicitly at each DDL statement, so a failed
+    migration that contains DDL can keep the statements that ran before the failure (data changes
+    included), with no history row for the migration. Prefer one DDL statement per MySQL migration.
   * Only versioned migrations are supported (no Flyway-style repeatable `R__` migrations or undo
     migrations).
   * The statement splitter recognizes standard `''` quote escaping but not non-standard
