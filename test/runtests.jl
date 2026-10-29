@@ -61,6 +61,9 @@ function DBInterface.execute(statement::Statement, params=())
 end
 DBInterface.close!(statement::Statement) = (statement.conn.closed += 1)
 DBInterface.close!(::Result) = nothing
+# every query returns no rows (an empty history table)
+Base.IteratorSize(::Type{Result}) = Base.SizeUnknown()
+Base.iterate(::Result) = nothing
 
 # Postgres.jl provides its own DBInterface.transaction override
 function DBInterface.transaction(f, conn::Connection)
@@ -475,6 +478,26 @@ end
         # history rows keep the driver's timestamp type (MySQL.jl 2.x also returns a Timestamp)
         ts = Postgres.Timestamp(0)
         @test DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "x", ts, 10, true).installed_on === ts
+    end
+
+    @testset "concurrent runners serialize on a PostgreSQL advisory lock" begin
+        conn = Postgres.Connection(Tuple{String, Any}[], 0, String[])
+        migrations = DBMigrations.runmigrations(conn, joinpath(@__DIR__, "sqlite", "test1"); silent=true)
+        @test length(migrations) == 3
+        sqls = first.(conn.executions)
+        lock = "SELECT 1 FROM pg_advisory_lock($(DBMigrations.PG_LOCK_KEY))"
+        unlock = "SELECT pg_advisory_unlock($(DBMigrations.PG_LOCK_KEY))"
+        # the lock spans reading the history through recording the last migration
+        @test sqls[1] == lock
+        @test startswith(sqls[2], "SELECT installed_rank")
+        @test count(startswith("INSERT INTO"), sqls) == 3
+        @test sqls[end] == unlock
+        # a failed run still releases it
+        empty!(conn.executions)
+        @test_throws ErrorException DBMigrations.withmigrationlock(() -> error("migration failed"), conn)
+        @test first.(conn.executions) == [lock, unlock]
+        # drivers without a session lock run unlocked
+        @test DBMigrations.withmigrationlock(() -> 42, SQLite.DB()) == 42
     end
 
     @testset "ODBC cursor compatibility" begin

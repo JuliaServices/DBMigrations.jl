@@ -152,6 +152,42 @@ function migrationtransaction(f, conn)
     end
 end
 
+# Session-level database locks that serialize concurrent `runmigrations` calls. They
+# outlive the per-migration commits (MySQL DDL commits implicitly), so one lock covers
+# reading the history, applying migrations, and recording them.
+# ponytail: one fixed lock per database (Postgres) or server (MySQL); key by schema or
+# database if parallel migrations of many schemas on one server become common.
+const PG_LOCK_KEY = 4918578858144457076 # the ASCII bytes of "DBMigrat"
+const MYSQL_LOCK_NAME = "flyway_schema_history"
+const MYSQL_LOCK_TIMEOUT = 86400 # seconds; GET_LOCK returns 0 (not acquired) after this
+
+function withmigrationlock(f, conn)
+    if usesdollarmarkers(conn)
+        executecommand(conn, "SELECT 1 FROM pg_advisory_lock($PG_LOCK_KEY)")
+        unlock = "SELECT pg_advisory_unlock($PG_LOCK_KEY)"
+    elseif ismysqlconnection(conn)
+        got = executewithcursor(conn, "SELECT GET_LOCK('$MYSQL_LOCK_NAME', $MYSQL_LOCK_TIMEOUT)") do cursor
+            for row in cursor, value in row
+                return value
+            end
+        end
+        isequal(got, 1) || error("could not acquire the migration lock `$MYSQL_LOCK_NAME` within $MYSQL_LOCK_TIMEOUT s; another session holds it")
+        unlock = "SELECT RELEASE_LOCK('$MYSQL_LOCK_NAME')"
+    else
+        return f()
+    end
+    try
+        return f()
+    finally
+        try
+            executecommand(conn, unlock)
+        catch e
+            # the server releases the lock when the session ends
+            @warn "Unable to release the migration lock" exception=e
+        end
+    end
+end
+
 struct ChecksumMismatch <: Exception
     filename::String
     checksum::Int
@@ -521,9 +557,22 @@ Duplicate migration versions (in the local directory or in the database history 
 `DuplicateMigrationError`. A migration recorded as failed in the history table (possible when the
 table is shared with other tools like Flyway; this package rolls failed migrations back without
 recording them) throws a `FailedMigrationError` and requires manual repair.
+
+Concurrent `runmigrations` calls against one PostgreSQL database (LibPQ, Postgres.jl) or one MySQL
+server run one at a time: each holds a session lock (`pg_advisory_lock`, `GET_LOCK`) from reading
+the history table until its last migration is recorded, so the others wait and then apply only
+what is still pending. Other drivers take no lock; there the history table's primary key makes a
+concurrent runner fail instead of recording a migration twice, which requires a history table
+created by DBMigrations 2.2 or later (or one given that primary key).
 """
 function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::Bool=true, allowoutoforder::Bool=false)
     isdir(dir) || throw(ArgumentError("migrations directory does not exist: `$dir`"))
+    return withmigrationlock(conn) do
+        applymigrations(conn, dir, silent, splitstatements, allowoutoforder)
+    end
+end
+
+function applymigrations(conn, dir, silent, splitstatements, allowoutoforder)
     # first fetch migrations already applied from the database
     local dbmigrations
     try
