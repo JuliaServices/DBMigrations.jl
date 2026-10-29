@@ -506,6 +506,15 @@ function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool, nestedcomm
     return statements
 end
 
+function historytableexists(conn)
+    try
+        executewithcursor(_ -> nothing, conn, "SELECT 1 FROM $MIGRATIONS_TABLE WHERE 1 = 0")
+        return true
+    catch
+        return false
+    end
+end
+
 function getmigrations(conn)
     # select columns explicitly: the Migration constructor is positional, so we can't
     # depend on the physical column order of a pre-existing (e.g. Flyway-created) table
@@ -573,20 +582,18 @@ function runmigrations(conn, dir::String; silent::Bool=false, splitstatements::B
 end
 
 function applymigrations(conn, dir, silent, splitstatements, allowoutoforder)
-    # first fetch migrations already applied from the database
-    local dbmigrations
-    try
-        dbmigrations = getmigrations(conn)
-    catch e
-        silent || @warn "Unable to query migrations table, attempting to create:" exception=e
+    # first fetch migrations already applied from the database; only a failing probe that
+    # names no columns means the table is missing, so other read errors reach the caller
+    if !historytableexists(conn)
+        silent || @info "Creating migrations table $MIGRATIONS_TABLE"
         try
             executecommand(conn, MIGRATIONS_TABLE_SCHEMA)
-            dbmigrations = getmigrations(conn)
         catch e
             @error "Unable to create migrations table" exception=e
             rethrow()
         end
     end
+    dbmigrations = getmigrations(conn)
     # Any unresolved failed row means the database may contain partial changes. It
     # must block later migrations even when its version/file is absent locally.
     for dbm in dbmigrations

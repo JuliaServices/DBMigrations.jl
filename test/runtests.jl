@@ -364,6 +364,36 @@ end
         @test_throws SQLiteException DBInterface.execute(db, insertsql)
     end
 
+    @testset "errors reading an existing history table reach the caller" begin
+        db = SQLite.DB()
+        # the table exists but lacks columns: the read error, not "table already exists", is thrown
+        DBInterface.execute(db, "CREATE TABLE $(DBMigrations.MIGRATIONS_TABLE) (installed_rank INTEGER NOT NULL, version VARCHAR(50))")
+        dir = joinpath(@__DIR__, "sqlite", "test1")
+        err = try
+            DBMigrations.runmigrations(db, dir; silent=true)
+            nothing
+        catch e
+            e
+        end
+        @test err isa SQLiteException
+        @test occursin("no such column", sprint(showerror, err))
+        # a missing table is still created
+        db = SQLite.DB()
+        @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 3
+        # and a failure to create it is reported (an index already owns the name)
+        db = SQLite.DB()
+        DBInterface.execute(db, "CREATE TABLE t (x INT)")
+        DBInterface.execute(db, "CREATE INDEX $(DBMigrations.MIGRATIONS_TABLE) ON t (x)")
+        err = @test_logs (:error, r"Unable to create migrations table") try
+            DBMigrations.runmigrations(db, dir; silent=true)
+            nothing
+        catch e
+            e
+        end
+        @test err isa SQLiteException
+        @test occursin("already an index", sprint(showerror, err))
+    end
+
     @testset "history table with different physical column order" begin
         mktempdir() do dir
             write(joinpath(dir, "V1__first.sql"), "CREATE TABLE t1 (x INT);")
@@ -513,7 +543,8 @@ end
         unlock = "SELECT pg_advisory_unlock($(DBMigrations.PG_LOCK_KEY))"
         # the lock spans reading the history through recording the last migration
         @test sqls[1] == lock
-        @test startswith(sqls[2], "SELECT installed_rank")
+        @test sqls[2] == "SELECT 1 FROM $(DBMigrations.MIGRATIONS_TABLE) WHERE 1 = 0"
+        @test startswith(sqls[3], "SELECT installed_rank")
         @test count(startswith("INSERT INTO"), sqls) == 3
         @test sqls[end] == unlock
         # a failed run still releases it
