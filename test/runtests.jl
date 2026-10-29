@@ -380,6 +380,18 @@ end
         # a missing table is still created
         db = SQLite.DB()
         @test length(DBMigrations.runmigrations(db, dir; silent=true)) == 3
+        # and a failure to create it is reported (an index already owns the name)
+        db = SQLite.DB()
+        DBInterface.execute(db, "CREATE TABLE t (x INT)")
+        DBInterface.execute(db, "CREATE INDEX $(DBMigrations.MIGRATIONS_TABLE) ON t (x)")
+        err = @test_logs (:error, r"Unable to create migrations table") try
+            DBMigrations.runmigrations(db, dir; silent=true)
+            nothing
+        catch e
+            e
+        end
+        @test err isa SQLiteException
+        @test occursin("already an index", sprint(showerror, err))
     end
 
     @testset "history table with different physical column order" begin
