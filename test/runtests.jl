@@ -24,9 +24,33 @@ function DBInterface.execute(conn::DBConnection, sql::AbstractString, params=())
 end
 end
 
+# A minimal stand-in for MySQL.jl that records statements; `GET_LOCK` returns `getlock`.
 module MySQL
 import DBInterface
-struct Connection <: DBInterface.Connection end
+
+mutable struct Connection <: DBInterface.Connection
+    executions::Vector{String}
+    getlock::Any
+end
+Connection() = Connection(String[], 1)
+
+struct Statement <: DBInterface.Statement
+    conn::Connection
+    sql::String
+end
+
+struct Cursor
+    rows::Vector{Vector{Any}}
+end
+
+DBInterface.prepare(conn::Connection, sql::AbstractString) = Statement(conn, String(sql))
+function DBInterface.execute(statement::Statement, params=())
+    push!(statement.conn.executions, statement.sql)
+    return Cursor(startswith(statement.sql, "SELECT GET_LOCK") ? [Any[statement.conn.getlock]] : Vector{Any}[])
+end
+Base.iterate(cursor::Cursor, i=1) = i > length(cursor.rows) ? nothing : (cursor.rows[i], i + 1)
+DBInterface.close!(::Statement) = nothing
+DBInterface.close!(::Cursor) = nothing
 end
 
 # A minimal stand-in for Postgres.jl. It implements the full DBInterface
@@ -61,6 +85,9 @@ function DBInterface.execute(statement::Statement, params=())
 end
 DBInterface.close!(statement::Statement) = (statement.conn.closed += 1)
 DBInterface.close!(::Result) = nothing
+# every query returns no rows (an empty history table)
+Base.IteratorSize(::Type{Result}) = Base.SizeUnknown()
+Base.iterate(::Result) = nothing
 
 # Postgres.jl provides its own DBInterface.transaction override
 function DBInterface.transaction(f, conn::Connection)
@@ -475,6 +502,41 @@ end
         # history rows keep the driver's timestamp type (MySQL.jl 2.x also returns a Timestamp)
         ts = Postgres.Timestamp(0)
         @test DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "x", ts, 10, true).installed_on === ts
+    end
+
+    @testset "concurrent runners serialize on a PostgreSQL advisory lock" begin
+        conn = Postgres.Connection(Tuple{String, Any}[], 0, String[])
+        migrations = DBMigrations.runmigrations(conn, joinpath(@__DIR__, "sqlite", "test1"); silent=true)
+        @test length(migrations) == 3
+        sqls = first.(conn.executions)
+        lock = "SELECT 1 FROM pg_advisory_lock($(DBMigrations.PG_LOCK_KEY))"
+        unlock = "SELECT pg_advisory_unlock($(DBMigrations.PG_LOCK_KEY))"
+        # the lock spans reading the history through recording the last migration
+        @test sqls[1] == lock
+        @test startswith(sqls[2], "SELECT installed_rank")
+        @test count(startswith("INSERT INTO"), sqls) == 3
+        @test sqls[end] == unlock
+        # a failed run still releases it
+        empty!(conn.executions)
+        @test_throws ErrorException DBMigrations.withmigrationlock(() -> error("migration failed"), conn)
+        @test first.(conn.executions) == [lock, unlock]
+        # drivers without a session lock run unlocked
+        @test DBMigrations.withmigrationlock(() -> 42, SQLite.DB()) == 42
+    end
+
+    @testset "concurrent runners serialize on a MySQL named lock" begin
+        conn = MySQL.Connection()
+        @test DBMigrations.withmigrationlock(() -> 42, conn) == 42
+        name, timeout = DBMigrations.MYSQL_LOCK_NAME, DBMigrations.MYSQL_LOCK_TIMEOUT
+        @test conn.executions == ["SELECT GET_LOCK('$name', $timeout)", "SELECT RELEASE_LOCK('$name')"]
+        # GET_LOCK returns 0 on timeout and NULL on error: the run does not start
+        for result in (0, missing)
+            conn = MySQL.Connection(String[], result)
+            ran = Ref(false)
+            @test_throws ErrorException DBMigrations.withmigrationlock(() -> (ran[] = true), conn)
+            @test !ran[]
+            @test conn.executions == ["SELECT GET_LOCK('$name', $timeout)"]
+        end
     end
 
     @testset "ODBC cursor compatibility" begin
