@@ -24,9 +24,33 @@ function DBInterface.execute(conn::DBConnection, sql::AbstractString, params=())
 end
 end
 
+# A minimal stand-in for MySQL.jl that records statements; `GET_LOCK` returns `getlock`.
 module MySQL
 import DBInterface
-struct Connection <: DBInterface.Connection end
+
+mutable struct Connection <: DBInterface.Connection
+    executions::Vector{String}
+    getlock::Any
+end
+Connection() = Connection(String[], 1)
+
+struct Statement <: DBInterface.Statement
+    conn::Connection
+    sql::String
+end
+
+struct Cursor
+    rows::Vector{Vector{Any}}
+end
+
+DBInterface.prepare(conn::Connection, sql::AbstractString) = Statement(conn, String(sql))
+function DBInterface.execute(statement::Statement, params=())
+    push!(statement.conn.executions, statement.sql)
+    return Cursor(startswith(statement.sql, "SELECT GET_LOCK") ? [Any[statement.conn.getlock]] : Vector{Any}[])
+end
+Base.iterate(cursor::Cursor, i=1) = i > length(cursor.rows) ? nothing : (cursor.rows[i], i + 1)
+DBInterface.close!(::Statement) = nothing
+DBInterface.close!(::Cursor) = nothing
 end
 
 # A minimal stand-in for Postgres.jl. It implements the full DBInterface
@@ -498,6 +522,21 @@ end
         @test first.(conn.executions) == [lock, unlock]
         # drivers without a session lock run unlocked
         @test DBMigrations.withmigrationlock(() -> 42, SQLite.DB()) == 42
+    end
+
+    @testset "concurrent runners serialize on a MySQL named lock" begin
+        conn = MySQL.Connection()
+        @test DBMigrations.withmigrationlock(() -> 42, conn) == 42
+        name, timeout = DBMigrations.MYSQL_LOCK_NAME, DBMigrations.MYSQL_LOCK_TIMEOUT
+        @test conn.executions == ["SELECT GET_LOCK('$name', $timeout)", "SELECT RELEASE_LOCK('$name')"]
+        # GET_LOCK returns 0 on timeout and NULL on error: the run does not start
+        for result in (0, missing)
+            conn = MySQL.Connection(String[], result)
+            ran = Ref(false)
+            @test_throws ErrorException DBMigrations.withmigrationlock(() -> (ran[] = true), conn)
+            @test !ran[]
+            @test conn.executions == ["SELECT GET_LOCK('$name', $timeout)"]
+        end
     end
 
     @testset "ODBC cursor compatibility" begin
