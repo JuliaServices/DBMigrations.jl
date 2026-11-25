@@ -66,8 +66,10 @@ record of applied migrations (it does *not* undo the migrations themselves).
 
 ## Limitations
 
-  * No locking is performed: if multiple processes run migrations against the same database
-    concurrently, they may race. Coordinate deployments externally. The history table's primary
+  * Concurrent runs are serialized only through LibPQ and Postgres.jl (a PostgreSQL session
+    advisory lock) and MySQL.jl (`GET_LOCK`). Other drivers, such as SQLite and ODBC (even when
+    ODBC reaches PostgreSQL or MySQL), take no lock, so runners there may race; coordinate
+    deployments externally. The history table's primary
     key on `installed_rank` makes a losing runner fail instead of recording a migration twice.
     History tables created by DBMigrations before 2.2 have no primary key; on PostgreSQL or MySQL,
     add it with `ALTER TABLE flyway_schema_history ADD PRIMARY KEY (installed_rank)`.
