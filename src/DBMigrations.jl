@@ -452,8 +452,8 @@ splitsqlstatements(sql::AbstractString) = splitsqlstatements(sql, false)
 
 splitsqlstatements(sql::AbstractString, mysqlcomments::Bool) = splitsqlstatements(sql, mysqlcomments, !mysqlcomments)
 
-# `bracketquotes`: `[...]` quotes an identifier (SQLite, SQL Server). PostgreSQL and
-# MySQL use brackets for array subscripts and literals, which may hold strings with `]`.
+# `bracketquotes`: `[...]` quotes an identifier (SQLite, SQL Server). MySQL never quotes
+# with brackets, and PostgreSQL uses them for arrays, whose strings may hold `]`.
 function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool, nestedcomments::Bool,
                             bracketquotes::Bool=true)
     statements = String[]
