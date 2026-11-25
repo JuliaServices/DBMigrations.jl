@@ -529,6 +529,16 @@ end
         end
         @test conn.transactions == ["BEGIN", "ROLLBACK"]
 
+        # `[` is array syntax in PostgreSQL, not an identifier quote: a `]` inside a string
+        # in an ARRAY literal must not join the rest of the file into one statement
+        dir = mktempdir()
+        write(joinpath(dir, "V1__codes.sql"), "CREATE TABLE codes (code text CHECK (code = ANY (ARRAY['x]', 'y'])));\nCREATE TABLE after_it (id int);\n")
+        empty!(conn.executions)
+        DBMigrations.runmigrations(conn, dir; silent=true)
+        sqls = first.(conn.executions)
+        @test "CREATE TABLE codes (code text CHECK (code = ANY (ARRAY['x]', 'y'])))" in sqls
+        @test "CREATE TABLE after_it (id int)" in sqls
+
         # history rows keep the driver's timestamp type (MySQL.jl 2.x also returns a Timestamp)
         ts = Postgres.Timestamp(0)
         @test DBMigrations.Migration(1, "1", "first", "SQL", "V1__first.sql", 123, "x", ts, 10, true).installed_on === ts

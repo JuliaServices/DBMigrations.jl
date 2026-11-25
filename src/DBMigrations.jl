@@ -452,7 +452,10 @@ splitsqlstatements(sql::AbstractString) = splitsqlstatements(sql, false)
 
 splitsqlstatements(sql::AbstractString, mysqlcomments::Bool) = splitsqlstatements(sql, mysqlcomments, !mysqlcomments)
 
-function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool, nestedcomments::Bool)
+# `bracketquotes`: `[...]` quotes an identifier (SQLite, SQL Server). PostgreSQL and
+# MySQL use brackets for array subscripts and literals, which may hold strings with `]`.
+function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool, nestedcomments::Bool,
+                            bracketquotes::Bool=true)
     statements = String[]
     n = lastindex(sql)
     stmtstart = firstindex(sql)
@@ -469,7 +472,7 @@ function splitsqlstatements(sql::AbstractString, mysqlcomments::Bool, nestedcomm
         elseif c == '\'' || c == '"' || c == '`'
             hascontent = true
             i = skipquoted(sql, n, i, c)
-        elseif c == '['
+        elseif bracketquotes && c == '['
             hascontent = true
             i = skipquoted(sql, n, i, ']')
         elseif islinecommentstart(sql, n, i, mysqlcomments)
@@ -695,7 +698,8 @@ function applymigrations(conn, dir, silent, splitstatements, allowoutoforder)
             if splitstatements
                 mysqlcomments = ismysqlconnection(conn)
                 nestedcomments = !mysqlcomments && !issqliteconnection(conn)
-                for statement in splitsqlstatements(m.statements, mysqlcomments, nestedcomments)
+                bracketquotes = !mysqlcomments && !usesdollarmarkers(conn)
+                for statement in splitsqlstatements(m.statements, mysqlcomments, nestedcomments, bracketquotes)
                     executecommand(conn, statement)
                 end
             else
